@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Footer } from './components/Footer';
 import { MobileBottomNav } from './components/MobileBottomNav';
@@ -11,13 +11,33 @@ import { MpDirectoryPage } from './pages/MpDirectoryPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
 import { ReportIssuePage } from './pages/ReportIssuePage';
 import { AdminImportPage } from './pages/AdminImportPage';
+import { InvestigationWorkflowPage } from './pages/InvestigationWorkflowPage';
+import { AuditTrailPage } from './pages/AuditTrailPage';
+import { ModelEvaluationPage } from './pages/ModelEvaluationPage';
+import { DataMode, UserRole } from './types';
+import { setActiveRole, getActiveRole } from './services/api';
 
 export function App() {
   const [currentTab, setCurrentTab] = useState('home');
-  const [userRole, setUserRole] = useState('Citizen');
+  const [dataMode, setDataMode] = useState<DataMode>('all');
+  const [userRole, setUserRole] = useState<UserRole>('PUBLIC / CITIZEN');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [exploreSearchParam, setExploreSearchParam] = useState<string>('');
   const [reportInitialProjectId, setReportInitialProjectId] = useState<string>('');
+
+  useEffect(() => {
+    const saved = getActiveRole();
+    setUserRole(saved);
+  }, []);
+
+  const handleRoleChange = (role: UserRole) => {
+    setUserRole(role);
+    setActiveRole(role);
+  };
+
+  const handleDataModeChange = (mode: DataMode) => {
+    setDataMode(mode);
+  };
 
   const handleSelectProject = (projectId: string) => {
     setSelectedProjectId(projectId);
@@ -52,7 +72,9 @@ export function App() {
         currentTab={currentTab}
         onTabChange={handleTabChange}
         userRole={userRole}
-        onRoleChange={setUserRole}
+        onRoleChange={handleRoleChange}
+        dataMode={dataMode}
+        onDataModeChange={handleDataModeChange}
       />
 
       {/* Main Content Area */}
@@ -69,6 +91,7 @@ export function App() {
               }
             }}
             onSelectProject={handleSelectProject}
+            dataMode={dataMode}
           />
         )}
 
@@ -76,6 +99,7 @@ export function App() {
           <ExplorePage
             initialSearch={exploreSearchParam}
             onSelectProject={handleSelectProject}
+            dataMode={dataMode}
           />
         )}
 
@@ -88,12 +112,22 @@ export function App() {
           />
         )}
 
+        {currentTab === 'investigations' && (
+          <InvestigationWorkflowPage
+            onSelectProject={handleSelectProject}
+            dataMode={dataMode}
+          />
+        )}
+
         {currentTab === 'map' && (
           <MapViewPage onSelectProject={handleSelectProject} />
         )}
 
         {currentTab === 'queue' && (
-          <AuthorityQueuePage onSelectProject={handleSelectProject} />
+          <AuthorityQueuePage 
+            onSelectProject={handleSelectProject} 
+            dataMode={dataMode}
+          />
         )}
 
         {currentTab === 'mps' && (
@@ -104,7 +138,16 @@ export function App() {
           <AnalyticsPage
             onSelectProject={handleSelectProject}
             onNavigateExplore={handleNavigateExplore}
+            dataMode={dataMode}
           />
+        )}
+
+        {currentTab === 'model-eval' && (
+          <ModelEvaluationPage />
+        )}
+
+        {currentTab === 'audit' && (
+          <AuditTrailPage />
         )}
 
         {currentTab === 'report' && (

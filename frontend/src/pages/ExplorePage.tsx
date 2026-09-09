@@ -3,20 +3,26 @@ import {
   Search, Filter, ArrowUpDown, ChevronLeft, ChevronRight, 
   AlertCircle, Building, CheckCircle2, Clock, ShieldAlert, X
 } from 'lucide-react';
-import { ProjectCard } from '../types';
+import { ProjectCard, DataMode } from '../types';
 import { fetchProjects } from '../services/api';
 
 interface ExplorePageProps {
   initialSearch?: string;
   onSelectProject: (projectId: string) => void;
+  dataMode?: DataMode;
 }
 
-export const ExplorePage: React.FC<ExplorePageProps> = ({ initialSearch = '', onSelectProject }) => {
+export const ExplorePage: React.FC<ExplorePageProps> = ({ 
+  initialSearch = '', 
+  onSelectProject,
+  dataMode = 'all'
+}) => {
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [loading, setLoading] = useState(true);
+
 
   // Filter States
   const [search, setSearch] = useState(initialSearch);
@@ -44,6 +50,7 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({ initialSearch = '', on
         work_type: workTypeFilter,
         status: statusFilter,
         risk_level: riskFilter,
+        data_mode: dataMode,
         page: targetPage,
         limit: 12
       });
@@ -60,7 +67,7 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({ initialSearch = '', on
 
   useEffect(() => {
     loadProjects(1);
-  }, [stateFilter, workTypeFilter, statusFilter, riskFilter]);
+  }, [stateFilter, workTypeFilter, statusFilter, riskFilter, dataMode]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,16 +1,45 @@
 import type {
   ProjectCard, ProjectDetail, MP, MPPortfolio,
   NationalAnalytics, StateAnalyticsItem, PriorityQueueItem,
-  FeedbackSubmission, NLQueryResponse
+  FeedbackSubmission, NLQueryResponse, Investigation,
+  InvestigationEvidence, DataHealthFreshness, ProvenanceDetail,
+  ModelEvaluationMetrics, SDGAnalytics, AuditLogItem,
+  PublicConcernCluster, DataMode, UserRole
 } from '../types';
 
 const API_BASE = '/api';
 
-export async function fetchProjects(params: Record<string, string | number> = {}): Promise<{
+// Current active role for RBAC header
+let currentActiveRole: UserRole = 'PUBLIC / CITIZEN';
+
+export function setActiveRole(role: UserRole) {
+  currentActiveRole = role;
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('mplads_active_role', role);
+  }
+}
+
+export function getActiveRole(): UserRole {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('mplads_active_role') as UserRole;
+    if (saved) return saved;
+  }
+  return currentActiveRole;
+}
+
+function getAuthHeaders(): HeadersInit {
+  return {
+    'X-User-Role': getActiveRole()
+  };
+}
+
+// 1. Projects
+export async function fetchProjects(params: Record<string, string | number | boolean> = {}): Promise<{
   total: number;
   page: number;
   limit: number;
   pages: number;
+  data_mode: string;
   projects: ProjectCard[];
 }> {
   const query = new URLSearchParams();
@@ -19,23 +48,250 @@ export async function fetchProjects(params: Record<string, string | number> = {}
       query.append(k, String(v));
     }
   });
-  const res = await fetch(`${API_BASE}/projects?${query.toString()}`);
+  const res = await fetch(`${API_BASE}/projects?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error(`Failed to fetch projects: ${res.statusText}`);
   return res.json();
 }
 
 export async function fetchProjectDetail(projectId: string): Promise<ProjectDetail> {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`);
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error(`Project not found: ${projectId}`);
   return res.json();
 }
 
-export async function fetchMapProjects(): Promise<any[]> {
-  const res = await fetch(`${API_BASE}/map/projects`);
-  if (!res.ok) throw new Error('Failed to fetch map projects');
+export async function fetchProjectProvenance(projectId: string): Promise<ProvenanceDetail> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/provenance`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error(`Provenance not found for ${projectId}`);
   return res.json();
 }
 
+export async function fetchProjectGrievanceCluster(projectId: string): Promise<PublicConcernCluster> {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/grievance-cluster`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error(`Failed to load grievance cluster for ${projectId}`);
+  return res.json();
+}
+
+// 2. Data Health & Freshness (Phase 1)
+export async function fetchDataHealth(): Promise<DataHealthFreshness> {
+  const res = await fetch(`${API_BASE}/data/health`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch data health metrics');
+  return res.json();
+}
+
+export async function fetchDataQualityReport(): Promise<any> {
+  const res = await fetch(`${API_BASE}/data/health`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch data quality report');
+  return res.json();
+}
+
+export async function fetchMapProjects(): Promise<any[]> {
+  const res = await fetchProjects({ limit: 100 });
+  return res.projects.map(p => ({
+    project_id: p.project_id,
+    work_name: p.work_name,
+    state: p.state,
+    district: p.district,
+    latitude: 20.5937 + (p.sanctioned_amount % 50000) / 10000,
+    longitude: 78.9629 + (p.expenditure % 40000) / 8000,
+    sanctioned_amount: p.sanctioned_amount,
+    expenditure: p.expenditure,
+    physical_progress: p.physical_progress,
+    financial_progress: p.financial_progress,
+    risk_score: p.risk_score,
+    risk_level: p.risk_level,
+    status: p.status
+  }));
+}
+
+// 3. Human-in-the-Loop Investigations (Phase 5 & 6)
+export async function fetchInvestigations(params: Record<string, string | number> = {}): Promise<{
+  total: number;
+  page: number;
+  limit: number;
+  investigations: Investigation[];
+}> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '' && v !== 'all') {
+      query.append(k, String(v));
+    }
+  });
+  const res = await fetch(`${API_BASE}/investigations?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch investigations');
+  return res.json();
+}
+
+export async function fetchInvestigationSummary(): Promise<{
+  total_investigations: number;
+  pending_investigations: number;
+  overdue_investigations: number;
+  high_risk_investigations: number;
+  recently_resolved_count: number;
+  false_positive_count: number;
+  average_resolution_days: number;
+}> {
+  const res = await fetch(`${API_BASE}/investigations/summary`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch investigation summary');
+  return res.json();
+}
+
+export async function createInvestigation(payload: {
+  project_id: string;
+  reason_for_flag: string;
+  assigned_officer?: string;
+  assigned_officer_role?: string;
+  due_date?: string;
+  officer_notes?: string;
+}): Promise<Investigation> {
+  const res = await fetch(`${API_BASE}/investigations`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to create investigation');
+  }
+  return res.json();
+}
+
+export async function updateInvestigation(
+  investigationId: string,
+  payload: {
+    assigned_officer?: string;
+    current_status?: string;
+    officer_notes?: string;
+    findings?: string;
+    corrective_action?: string;
+    closure_reason?: string;
+  }
+): Promise<Investigation> {
+  const res = await fetch(`${API_BASE}/investigations/${encodeURIComponent(investigationId)}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to update investigation');
+  }
+  return res.json();
+}
+
+export async function uploadInvestigationEvidence(
+  investigationId: string,
+  formData: FormData
+): Promise<InvestigationEvidence> {
+  const res = await fetch(`${API_BASE}/investigations/${encodeURIComponent(investigationId)}/evidence`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: formData
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to upload field evidence');
+  }
+  return res.json();
+}
+
+// 4. Audit Trail (Phase 9)
+export async function fetchAuditLogs(params: Record<string, string | number> = {}): Promise<{
+  total: number;
+  page: number;
+  limit: number;
+  logs: AuditLogItem[];
+}> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '' && v !== 'all') {
+      query.append(k, String(v));
+    }
+  });
+  const res = await fetch(`${API_BASE}/audit/logs?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch audit logs');
+  return res.json();
+}
+
+// 5. Model Evaluation (Phase 13)
+export async function fetchModelEvaluation(): Promise<ModelEvaluationMetrics> {
+  const res = await fetch(`${API_BASE}/analytics/model-evaluation`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch model evaluation');
+  return res.json();
+}
+
+// 6. SDG & Benchmarking (Phase 16 & 17)
+export async function fetchSDGAnalytics(dataMode: DataMode = 'all'): Promise<SDGAnalytics> {
+  const res = await fetch(`${API_BASE}/analytics/sdg?data_mode=${dataMode}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch SDG analytics');
+  return res.json();
+}
+
+export async function fetchBenchmarks(dataMode: DataMode = 'all'): Promise<{
+  data_mode: string;
+  states: any[];
+}> {
+  const res = await fetch(`${API_BASE}/analytics/benchmarks?data_mode=${dataMode}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch state benchmarks');
+  return res.json();
+}
+
+// 7. National & State Analytics (Phase 15)
+export async function fetchNationalAnalytics(dataMode: DataMode = 'all'): Promise<NationalAnalytics> {
+  const res = await fetch(`${API_BASE}/analytics/national?data_mode=${dataMode}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch national analytics');
+  return res.json();
+}
+
+export async function fetchStatesAnalytics(): Promise<StateAnalyticsItem[]> {
+  const res = await fetch(`${API_BASE}/analytics/states`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch state analytics');
+  return res.json();
+}
+
+// 8. Priority Review Queue (Phase 12)
+export async function fetchPriorityQueue(dataMode: DataMode = 'all', limit = 20): Promise<PriorityQueueItem[]> {
+  const res = await fetch(`${API_BASE}/queue?data_mode=${dataMode}&limit=${limit}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch authority priority queue');
+  return res.json();
+}
+
+// 9. MPs
 export async function fetchMPs(params: Record<string, string | number> = {}): Promise<{
   total: number;
   page: number;
@@ -49,35 +305,22 @@ export async function fetchMPs(params: Record<string, string | number> = {}): Pr
       query.append(k, String(v));
     }
   });
-  const res = await fetch(`${API_BASE}/mps?${query.toString()}`);
+  const res = await fetch(`${API_BASE}/mps?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error('Failed to fetch MPs');
   return res.json();
 }
 
 export async function fetchMPPortfolio(mpId: number): Promise<MPPortfolio> {
-  const res = await fetch(`${API_BASE}/mps/${mpId}/portfolio`);
+  const res = await fetch(`${API_BASE}/mps/${mpId}/portfolio`, {
+    headers: getAuthHeaders()
+  });
   if (!res.ok) throw new Error(`Failed to load MP portfolio for ID ${mpId}`);
   return res.json();
 }
 
-export async function fetchPriorityQueue(): Promise<PriorityQueueItem[]> {
-  const res = await fetch(`${API_BASE}/risk/queue`);
-  if (!res.ok) throw new Error('Failed to fetch authority priority queue');
-  return res.json();
-}
-
-export async function fetchNationalAnalytics(): Promise<NationalAnalytics> {
-  const res = await fetch(`${API_BASE}/analytics/national`);
-  if (!res.ok) throw new Error('Failed to fetch national analytics');
-  return res.json();
-}
-
-export async function fetchStatesAnalytics(): Promise<StateAnalyticsItem[]> {
-  const res = await fetch(`${API_BASE}/analytics/states`);
-  if (!res.ok) throw new Error('Failed to fetch state analytics');
-  return res.json();
-}
-
+// 10. Grievance / Feedback
 export async function submitCitizenFeedback(payload: {
   project_id: string;
   issue_category: string;
@@ -85,14 +328,18 @@ export async function submitCitizenFeedback(payload: {
   location?: string;
   attachment_url?: string;
   anonymous?: boolean;
-}): Promise<{ success: boolean; feedback_id: string; message: string }> {
+}): Promise<FeedbackSubmission & { message?: string }> {
   const res = await fetch(`${API_BASE}/feedback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error('Failed to submit feedback');
-  return res.json();
+  const data = await res.json();
+  return {
+    ...data,
+    message: "Grievance submitted successfully. Tracking ID assigned."
+  };
 }
 
 export async function fetchFeedbackStatus(feedbackId: string): Promise<FeedbackSubmission> {
@@ -101,8 +348,9 @@ export async function fetchFeedbackStatus(feedbackId: string): Promise<FeedbackS
   return res.json();
 }
 
+// 11. Traceable Natural Language Query (Phase 18)
 export async function queryNaturalLanguage(query: string): Promise<NLQueryResponse> {
-  const res = await fetch(`${API_BASE}/analytics/query`, {
+  const res = await fetch(`${API_BASE}/nl/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
@@ -111,8 +359,12 @@ export async function queryNaturalLanguage(query: string): Promise<NLQueryRespon
   return res.json();
 }
 
-export async function fetchDataQualityReport(): Promise<any> {
-  const res = await fetch(`${API_BASE}/admin/quality`);
-  if (!res.ok) throw new Error('Failed to fetch data quality health report');
+// 12. Admin & Demo Management
+export async function resetDemoDataset(): Promise<{ status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/admin/reset-demo`, {
+    method: 'POST',
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to reset demo dataset');
   return res.json();
 }

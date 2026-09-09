@@ -2,22 +2,47 @@ import json
 from datetime import datetime, timedelta
 from typing import List
 from sqlalchemy.orm import Session
-from backend.models.models import Project, Payment, ProgressUpdate, RiskAssessment, Feedback, MP
+from backend.models.models import (
+    Project, Payment, ProgressUpdate, RiskAssessment, Feedback, MP,
+    Investigation, InvestigationEvidence, RiskHistory, AuditLog
+)
+from backend.ml.risk_engine import risk_engine
+
+def map_sdg_and_category(work_type: str) -> tuple[str, str]:
+    w = work_type.lower()
+    if "water" in w or "jal" in w or "borewell" in w:
+        return "SDG 6: Clean Water & Sanitation", "Drinking Water"
+    elif "school" in w or "education" in w or "library" in w or "classroom" in w:
+        return "SDG 4: Quality Education", "Education"
+    elif "health" in w or "dispensary" in w or "clinic" in w or "hospital" in w:
+        return "SDG 3: Good Health & Well-Being", "Healthcare"
+    elif "solar" in w or "energy" in w or "lighting" in w:
+        return "SDG 7: Affordable & Clean Energy", "Renewable Energy"
+    elif "road" in w or "bridge" in w or "culvert" in w or "drainage" in w:
+        return "SDG 9: Industry, Innovation & Infrastructure", "Connectivity"
+    elif "sanitation" in w or "toilet" in w or "waste" in w:
+        return "SDG 6: Clean Water & Sanitation", "Sanitation"
+    else:
+        return "SDG 11: Sustainable Cities & Communities", "Community Infrastructure"
+
 
 def generate_demo_dataset(db: Session):
     """
-    Generates realistic demonstration project records linked to normalized MPs.
+    Generates realistic, production-grade demonstration project records linked to normalized MPs.
+    Strictly labeled 'Demonstration Dataset', is_demo=True.
     Includes:
-    - Normal projects
-    - Cost anomaly projects
-    - Delay anomaly projects
-    - Progress mismatch projects (Financial >> Physical)
-    - Semantic duplicate / similar projects
-    - Payment anomaly projects
-    - The Flagship Golden Demo project (Critical Risk 91/100)
-    All strictly labeled 'Demonstration Dataset', is_demo=True.
+    - Provenance metadata
+    - The Flagship Golden Demo project (Critical Risk 91/100, Varanasi)
+    - 6-Point Risk History Trend (April 22 -> Sept 91)
+    - Full 9-Stage Human-in-the-Loop Investigation Workflow Cases
+    - Geo-tagged Field Verification evidence with GPS discrepancy & photos
+    - Public Concern Clusters with anti-spam safeguards
+    - Peer-group cost benchmarking metrics
     """
-    # Clean existing projects
+    # Clean existing simulation data
+    db.query(InvestigationEvidence).delete()
+    db.query(Investigation).delete()
+    db.query(RiskHistory).delete()
     db.query(Feedback).delete()
     db.query(RiskAssessment).delete()
     db.query(ProgressUpdate).delete()
@@ -25,13 +50,12 @@ def generate_demo_dataset(db: Session):
     db.query(Project).delete()
     db.commit()
 
-    # Query real MPs from database for realistic linkages
+    # Query real MPs for realistic linkages
     mps = db.query(MP).all()
     if not mps:
         print("Warning: No MPs in database. Generating fallback linkage.")
         return
 
-    # Helper to find MP by state or constituency
     def find_mp(state_name: str, const_name: str = None):
         for mp in mps:
             if state_name.lower() in mp.state.lower():
@@ -41,8 +65,12 @@ def generate_demo_dataset(db: Session):
                     return mp
         return mps[0]
 
-    # --- 1. GOLDEN DEMO PROJECT ---
+    # ==========================================
+    # 1. FLAGSHIP GOLDEN DEMO PROJECT (Varanasi)
+    # ==========================================
     golden_mp = find_mp("Uttar Pradesh", "Varanasi") or mps[0]
+    golden_sdg, golden_cat = map_sdg_and_category("Community Infrastructure")
+    
     golden_proj = Project(
         project_id="MPLAD-UP-2023-GOLDEN-01",
         work_name="Community Facility Development — Demonstration District",
@@ -54,6 +82,8 @@ def generate_demo_dataset(db: Session):
         latitude=25.3176,
         longitude=82.9739,
         work_type="Community Infrastructure",
+        work_category=golden_cat,
+        sdg_goal=golden_sdg,
         sanctioned_amount=1850000.0, # ₹18.5 lakh
         estimated_cost=1850000.0,
         revised_cost=2480000.0,     # ₹24.8 lakh (+34% overrun)
@@ -67,12 +97,17 @@ def generate_demo_dataset(db: Session):
         implementing_agency="District Rural Development Agency (DRDA)",
         status="Delayed",
         source="Demonstration Dataset",
+        source_name="Demonstration Simulation Store (SIH Problem Statement Demo)",
+        source_url="https://mplads.gov.in",
+        source_record_id="DEMO-REC-UP-VAR-001",
+        data_version="v2026.1-Demo",
+        ingestion_batch_id="BATCH-DEMO-SIM-01",
         is_demo=True
     )
     db.add(golden_proj)
     db.flush()
 
-    # Golden Project Payments (showing payment concentration anomaly: 80% released at 51% physical)
+    # Golden Project Payments (showing payment concentration anomaly)
     payments_data = [
         ("PAY-GLD-001", "2023-08-01", 370000.0, "M/s Purvanchal Buildcon", "Mobilization Advance (20%)"),
         ("PAY-GLD-002", "2023-11-15", 740000.0, "M/s Purvanchal Buildcon", "Milestone 1 - Foundation & Plinth (40%)"),
@@ -118,6 +153,23 @@ def generate_demo_dataset(db: Session):
         "Inspect vendor payment vouchers and bank realization timestamps.",
         "Conduct geospatial field verification to ensure non-duplication with nearby community assets."
     ]
+    golden_priority_breakdown = {
+        "risk_component": 91.0,
+        "financial_exposure": "High",
+        "financial_exposure_score": 80.0,
+        "public_impact": "High",
+        "public_impact_score": 75.0,
+        "urgency": "High",
+        "urgency_score": 85.0,
+        "public_concern_score": 78.0,
+        "explanation": "Ranked #1 Priority: Critical composite risk (91/100), 38% progress divergence, and 128 days calendar delay on essential civic facility."
+    }
+    golden_early_warning = [
+        "Disbursement velocity significantly exceeds civil completion rate (gap: 38.0%).",
+        "Overdue by 128 days with physical completion stalled at 51%.",
+        "Recommended Action: Freeze next milestone tranche pending physical joint verification."
+    ]
+
     db.add(RiskAssessment(
         project_id=golden_proj.project_id,
         risk_score=91.0,
@@ -129,420 +181,379 @@ def generate_demo_dataset(db: Session):
         payment_anomaly_score=84.0,
         progress_mismatch_score=95.0,
         public_concern_score=78.0,
+        peer_median_cost=1850000.0,
+        peer_avg_cost=1920000.0,
+        peer_p90_cost=2200000.0,
+        peer_deviation_pct=34.1,
+        peer_anomaly_level="High",
+        priority_score=88.5,
+        priority_breakdown=json.dumps(golden_priority_breakdown),
+        early_warning_level="Critical",
+        early_warning_signals=json.dumps(golden_early_warning),
         confidence=0.91,
         explanation=json.dumps(golden_explanations),
         recommended_actions=json.dumps(golden_actions),
         similar_project_id="MPLAD-UP-2023-SIM-02",
         similar_project_name="Construction of Multipurpose Community Centre — Sevapuri",
-        similarity_percentage=92.0
+        similarity_percentage=92.0,
+        similarity_distance_km=1.8,
+        similarity_cost_pct=87.3,
+        similarity_time_gap_months=4.0,
+        similarity_risk_level="HIGH"
     ))
 
-    # Golden Project Citizen Feedback (Public Concern Cluster)
-    feedbacks = [
-        ("MPL-FB-2026-008241", "Work incomplete", "The community hall was left half-built 4 months ago. No workers have been seen on site, yet board shows 89% funds spent.", "Sevapuri Ward 14", "Urgent", "progress concern"),
-        ("MPL-FB-2026-008242", "Poor quality", "Plaster on newly constructed pillar is peeling off and water leakage visible near slab joints.", "Sevapuri Ward 14", "High", "poor quality"),
-        ("MPL-FB-2026-008243", "Potential duplicate work", "Another multipurpose community centre was already sanctioned 1.5 km away in 2022 by zilla parishad.", "Sevapuri Ward 14", "High", "duplicate concern")
+    # Phase 10: 6-Point Risk History Trend for Golden Demo Project
+    # "April: 22 -> May: 31 -> June: 47 -> July: 68 -> August: 84 -> September: 91"
+    risk_history_points = [
+        ("2024-04-15", 22.0, 20.0, 25.0, 370000.0, "LOW", "Baseline Sanction Audit"),
+        ("2024-05-20", 31.0, 35.0, 32.0, 650000.0, "MODERATE", "Periodic Milestone Scan"),
+        ("2024-06-30", 47.0, 55.0, 40.0, 1020000.0, "MODERATE", "Tranche Release Review"),
+        ("2024-07-25", 68.0, 75.0, 46.0, 1480000.0, "ELEVATED", "Progress Divergence Warning (+29%)"),
+        ("2024-08-20", 84.0, 82.0, 49.0, 1850000.0, "HIGH", "Calendar Overdue Trigger (>90 days)"),
+        ("2024-09-08", 91.0, 89.0, 51.0, 2480000.0, "CRITICAL", "Citizen Grievance Spike & Duplicate Nearby Flag")
     ]
-    for fid, fcat, fdesc, floc, fpri, faicat in feedbacks:
+    for rdate, rscore, rfin, rphy, rexp, rlvl, revt in risk_history_points:
+        db.add(RiskHistory(
+            project_id=golden_proj.project_id,
+            recorded_at=rdate,
+            risk_score=rscore,
+            financial_progress=rfin,
+            physical_progress=rphy,
+            expenditure=rexp,
+            risk_level=rlvl,
+            trigger_event=revt
+        ))
+
+    # Phase 5: Investigation Case for Golden Demo
+    golden_inv = Investigation(
+        investigation_id="INV-UP-2024-001",
+        project_id=golden_proj.project_id,
+        risk_level="CRITICAL",
+        risk_score=91.0,
+        priority_score=88.5,
+        reason_for_flag="Financial progress (89%) significantly exceeds physical progress (51%) by 38%, accompanied by 34% cost overrun and semantic duplicate within 1.8km.",
+        assigned_officer="Er. Rajesh Kumar",
+        assigned_officer_role="District Nodal Officer (Varanasi)",
+        assigned_by="District Magistrate / Collector",
+        created_date=datetime.utcnow() - timedelta(days=14),
+        due_date="2026-09-30",
+        current_status="Under Verification",
+        officer_notes="Notice served to M/s Purvanchal Buildcon. Joint inspection team constituted with DRDA Executive Engineer.",
+        findings="Substructure partially completed. Foundation beam crack observed in Block B. Physical progress verified at 51.0% vs billed claim of 89.0%.",
+        corrective_action="Recovery notice issued for ₹6,30,000 unverified advance. Third-party structural integrity audit ordered.",
+        is_demo=True
+    )
+    db.add(golden_inv)
+    db.flush()
+
+    # Phase 6 & Phase 14: Geo-tagged Field Verification Evidence
+    db.add(InvestigationEvidence(
+        investigation_id=golden_inv.investigation_id,
+        project_id=golden_proj.project_id,
+        evidence_type="Site Photograph",
+        file_name="varanasi_community_hall_foundation.jpg",
+        file_url="https://images.unsplash.com/photo-1541888946425-d0fbb186156a?auto=format&fit=crop&w=800&q=80",
+        file_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        expected_latitude=25.3176,
+        expected_longitude=82.9739,
+        observed_latitude=25.3182,
+        observed_longitude=82.9744,
+        distance_difference_meters=82.5,
+        gps_timestamp=datetime.utcnow() - timedelta(days=3),
+        uploaded_by="Er. Rajesh Kumar",
+        uploaded_by_role="District Nodal Officer",
+        uploaded_at=datetime.utcnow() - timedelta(days=3),
+        notes="On-ground site inspection photograph taken with handheld GPS camera. Plinth beam exposed, roof incomplete.",
+        visual_assessment="Superstructure Incomplete (51% progress observed)",
+        visual_mismatch_flag=True
+    ))
+
+    db.add(InvestigationEvidence(
+        investigation_id=golden_inv.investigation_id,
+        project_id=golden_proj.project_id,
+        evidence_type="Measurement Sheet",
+        file_name="MB_Record_Sevapuri_Ward14.pdf",
+        file_url="/evidence/mb_sevapuri_ward14.pdf",
+        file_hash="a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e",
+        uploaded_by="Shri S. K. Verma",
+        uploaded_by_role="Assistant Engineer, DRDA",
+        uploaded_at=datetime.utcnow() - timedelta(days=5),
+        notes="Official Measurement Book entries for Milestone 1 & 2 cross-checked against billing records.",
+        visual_assessment="Indeterminate (Documentary Audit)",
+        visual_mismatch_flag=False
+    ))
+
+    # Phase 11: Golden Project Citizen Feedback (Public Concern Cluster)
+    feedbacks_data = [
+        ("MPL-FB-2026-000101", "Incomplete Work", "Work has been abandoned since March 2024. Only pillars have been erected; no laborers visible on site for 5 months.", "High", "Under Review"),
+        ("MPL-FB-2026-000102", "Delay", "Scheduled completion date was April 2024. Construction is completely stalled while public funds appear to be exhausted.", "Urgent", "Action Initiated"),
+        ("MPL-FB-2026-000103", "Poor Construction Quality", "Exposed iron rebar rusting in monsoon rains. Foundation concrete showing visible cracks.", "Normal", "Under Review"),
+        ("MPL-FB-2026-000104", "Duplicate Project Allegation", "A similar Panchayat Bhavan building was constructed merely 2 kilometers away in 2022. Why was a second community hall sanctioned?", "High", "Under Review")
+    ]
+    for fid, fcat, fdesc, fpri, fstat in feedbacks_data:
         db.add(Feedback(
             feedback_id=fid,
             project_id=golden_proj.project_id,
             issue_category=fcat,
             description=fdesc,
-            location=floc,
+            location="Ward 14, Sevapuri Block, Varanasi",
+            attachment_url=None,
             anonymous=False,
-            status="Under Review",
+            status=fstat,
             priority=fpri,
-            ai_category=faicat
+            ai_category=fcat,
+            reporter_ip_hash="d8578edf8458ce06fbc5bb76a58c5ca4"
         ))
 
-    # --- 2. THE NEARBY SIMILAR / DUPLICATE WORK ---
-    sim_proj = Project(
+    # Audit Logs for Golden Project Lifecycle (Phase 9 & 21)
+    audit_events = [
+        ("System AI Risk Engine", "MINISTRY / SUPER ADMIN", "AI_FLAGGED_CRITICAL", golden_proj.project_id, "INV-UP-2024-001", "Composite risk score reached 91/100 (CRITICAL). Automated triage alert issued."),
+        ("District Collector Office", "STATE ADMIN / NODAL OFFICER", "INVESTIGATION_ASSIGNED", golden_proj.project_id, "INV-UP-2024-001", "Assigned investigation to Er. Rajesh Kumar (District Nodal Officer)."),
+        ("Er. Rajesh Kumar", "DISTRICT OFFICER", "EVIDENCE_UPLOAD", golden_proj.project_id, "INV-UP-2024-001", "Uploaded geotagged site inspection photo and Measurement Book audit."),
+        ("Er. Rajesh Kumar", "DISTRICT OFFICER", "FINDING_RECORDED", golden_proj.project_id, "INV-UP-2024-001", "Recorded finding: 51% actual progress vs 89% billed expenditure. Notice served.")
+    ]
+    for a_actor, a_role, a_act, a_rec, a_inv, a_det in audit_events:
+        db.add(AuditLog(
+            actor=a_actor,
+            role=a_role,
+            action=a_act,
+            record_id=a_rec,
+            investigation_id=a_inv,
+            details=a_det,
+            timestamp=datetime.utcnow() - timedelta(days=2)
+        ))
+
+    # ========================================================
+    # 2. NEARBY SIMILAR WORK (Demonstrating Multi-Signal Duplicates)
+    # ========================================================
+    nearby_proj = Project(
         project_id="MPLAD-UP-2023-SIM-02",
         work_name="Construction of Multipurpose Community Centre — Sevapuri",
         mp_id=golden_mp.id,
         state=golden_mp.state,
         constituency=golden_mp.constituency or "Varanasi",
         district="Varanasi",
-        location="Sevapuri Rural Centre",
-        latitude=25.3210,
-        longitude=82.9610,
+        location="Village Chhatarwar, Sevapuri Block",
+        latitude=25.3240,
+        longitude=82.9860,
         work_type="Community Infrastructure",
-        sanctioned_amount=1900000.0,
-        estimated_cost=1900000.0,
-        revised_cost=1900000.0,
-        expenditure=1820000.0,
-        financial_progress=95.0,
-        physical_progress=92.0,
-        sanction_date="2022-11-10",
-        start_date="2023-01-05",
-        expected_completion="2023-12-31",
-        completion_date="2024-01-15",
+        work_category="Community Infrastructure",
+        sdg_goal="SDG 11: Sustainable Cities & Communities",
+        sanctioned_amount=2120000.0,
+        estimated_cost=2120000.0,
+        revised_cost=2120000.0,
+        expenditure=1800000.0,
+        financial_progress=84.9,
+        physical_progress=85.0,
+        sanction_date="2023-02-10",
+        start_date="2023-03-01",
+        expected_completion="2024-01-15",
+        completion_date="2024-01-20",
         implementing_agency="Public Works Department (PWD)",
         status="Completed",
         source="Demonstration Dataset",
+        source_name="Demonstration Simulation Store (SIH Problem Statement Demo)",
+        source_url="https://mplads.gov.in",
+        source_record_id="DEMO-REC-UP-VAR-002",
+        data_version="v2026.1-Demo",
+        ingestion_batch_id="BATCH-DEMO-SIM-01",
         is_demo=True
     )
-    db.add(sim_proj)
+    db.add(nearby_proj)
     db.flush()
+
     db.add(RiskAssessment(
-        project_id=sim_proj.project_id,
-        risk_score=42.0,
-        risk_level="MODERATE",
-        anomaly_score=30.0,
-        delay_score=25.0,
-        cost_overrun_score=10.0,
-        duplicate_score=92.0,
-        payment_anomaly_score=20.0,
-        progress_mismatch_score=15.0,
-        public_concern_score=10.0,
-        confidence=0.88,
-        explanation=json.dumps(["High semantic and geographic overlap with nearby project MPLAD-UP-2023-GOLDEN-01 (92% text similarity, 1.8km distance)."]),
-        recommended_actions=json.dumps(["Verify asset register to ensure facility demarcation."]),
+        project_id=nearby_proj.project_id,
+        risk_score=24.0,
+        risk_level="LOW",
+        anomaly_score=15.0,
+        delay_score=5.0,
+        cost_overrun_score=0.0,
+        duplicate_score=45.0,
+        payment_anomaly_score=10.0,
+        progress_mismatch_score=0.0,
+        public_concern_score=5.0,
+        peer_median_cost=1850000.0,
+        peer_avg_cost=1920000.0,
+        peer_p90_cost=2200000.0,
+        peer_deviation_pct=14.6,
+        peer_anomaly_level="Normal",
+        priority_score=35.0,
+        priority_breakdown=json.dumps({"explanation": "Completed work with verified civil milestones."}),
+        early_warning_level="Informational",
+        early_warning_signals=json.dumps(["Asset completed and handed over."]),
+        confidence=0.92,
+        explanation=json.dumps(["Project completed within budget and verified by PWD inspection."]),
+        recommended_actions=json.dumps(["Standard asset tagging in GIS inventory."]),
         similar_project_id=golden_proj.project_id,
         similar_project_name=golden_proj.work_name,
-        similarity_percentage=92.0
+        similarity_percentage=92.0,
+        similarity_distance_km=1.8,
+        similarity_cost_pct=87.3,
+        similarity_time_gap_months=4.0,
+        similarity_risk_level="HIGH"
     ))
 
-    # --- 3. MORE DIVERSE REALISTIC PROJECTS ACROSS STATES ---
-    sample_definitions = [
-        # Maharashtra
-        {
-            "id": "MPLAD-MH-2023-001",
-            "name": "Installation of High-Mast Solar LED Lights at Public Junctions",
-            "state": "Maharashtra", "const": "PUNE", "dist": "Pune", "loc": "Haveli & Khed Talukas",
-            "lat": 18.5204, "lng": 73.8567, "type": "Renewable Energy",
-            "sanc": 2500000.0, "rev": 2500000.0, "exp": 2450000.0, "fin": 98.0, "phy": 100.0,
-            "status": "Completed", "risk": 18.0, "level": "LOW",
-            "reasons": ["Project completed within sanctioned budget and schedule."],
-            "actions": ["Routine post-completion physical asset geotagging verification."]
-        },
-        {
-            "id": "MPLAD-MH-2023-002",
-            "name": "Construction of Additional Classrooms in Zilla Parishad High School",
-            "state": "Maharashtra", "const": "NAGPUR", "dist": "Nagpur", "loc": "Saoner Rural Block",
-            "lat": 21.1458, "lng": 79.0882, "type": "Education",
-            "sanc": 3500000.0, "rev": 4600000.0, "exp": 4200000.0, "fin": 91.3, "phy": 48.0,
-            "status": "In Progress", "risk": 78.0, "level": "HIGH",
-            "reasons": [
-                "Financial progress (91.3%) substantially outpaces physical execution (48.0%).",
-                "Cost escalation of +31.4% recorded against original sanction.",
-                "Project is running 85 days behind target milestone."
-            ],
-            "actions": [
-                "Issue audit notice to Executive Engineer regarding milestone discrepancy.",
-                "Halt interim disbursement pending joint site verification."
-            ]
-        },
-        # Gujarat
-        {
-            "id": "MPLAD-GJ-2023-003",
-            "name": "Rural Piped Drinking Water Supply Network & RO Purification Plant",
-            "state": "Gujarat", "const": "GANDHINAGAR", "dist": "Gandhinagar", "loc": "Kalol Sector 4",
-            "lat": 23.2156, "lng": 72.6369, "type": "Drinking Water",
-            "sanc": 4200000.0, "rev": 4200000.0, "exp": 3800000.0, "fin": 90.5, "phy": 92.0,
-            "status": "In Progress", "risk": 22.0, "level": "LOW",
-            "reasons": ["Financial expenditure correlates closely with verified physical pipeline installation."],
-            "actions": ["Proceed with scheduled final phase commissioning."]
-        },
-        {
-            "id": "MPLAD-GJ-2023-004",
-            "name": "Widening and Bituminous Paving of Approach Link Road",
-            "state": "Gujarat", "const": "SURAT", "dist": "Surat", "loc": "Olpad Industrial Corridor",
-            "lat": 21.1702, "lng": 72.8311, "type": "Roads & Bridges",
-            "sanc": 5000000.0, "rev": 6400000.0, "exp": 5800000.0, "fin": 90.6, "phy": 55.0,
-            "status": "Delayed", "risk": 74.0, "level": "HIGH",
-            "reasons": [
-                "Cost deviation of +28.0% over original sanctioned amount.",
-                "Physical progress lag of 35.6% relative to financial releases.",
-                "Multiple citizen reports received regarding sub-base quality."
-            ],
-            "actions": [
-                "Core sample testing of road thickness and bitumen mix.",
-                "Scrutiny of variation approval records."
-            ]
-        },
-        # Bihar
-        {
-            "id": "MPLAD-BR-2023-005",
-            "name": "Construction of Primary Health Centre Diagnostic Sub-Centre",
-            "state": "Bihar", "const": "PATNA SAHIB", "dist": "Patna", "loc": "Phulwari Sharif",
-            "lat": 25.5941, "lng": 85.1376, "type": "Health & Sanitation",
-            "sanc": 3000000.0, "rev": 4100000.0, "exp": 3850000.0, "fin": 93.9, "phy": 52.0,
-            "status": "Delayed", "risk": 84.0, "level": "HIGH",
-            "reasons": [
-                "Severe physical vs financial divergence (41.9% gap).",
-                "Project delayed by 142 days beyond sanctioned completion.",
-                "Unusual payment concentration in final quarter without roof casting."
-            ],
-            "actions": [
-                "Immediate on-site technical inspection by District Engineer.",
-                "Cross-check bills with biometric labor logs."
-            ]
-        },
-        {
-            "id": "MPLAD-BR-2023-006",
-            "name": "Installation of Deep Tube Wells with Hand Pumps in Flood-Prone Wards",
-            "state": "Bihar", "const": "PURNEA", "dist": "Purnea", "loc": "Kasba Block",
-            "lat": 25.7771, "lng": 87.4753, "type": "Drinking Water",
-            "sanc": 1500000.0, "rev": 1500000.0, "exp": 1420000.0, "fin": 94.6, "phy": 95.0,
-            "status": "Completed", "risk": 15.0, "level": "LOW",
-            "reasons": ["Works verified with GPS coordinates matching water quality certification."],
-            "actions": ["Archival to scheme completion register."]
-        },
-        # Tamil Nadu
-        {
-            "id": "MPLAD-TN-2023-007",
-            "name": "Upgradation of Anganwadi Centres with Modern Sanitation & Nutrition Facilities",
-            "state": "Tamil Nadu", "const": "CHENNAI CENTRAL", "dist": "Chennai", "loc": "Zone 8 Anna Nagar",
-            "lat": 13.0827, "lng": 80.2707, "type": "Health & Sanitation",
-            "sanc": 2800000.0, "rev": 2800000.0, "exp": 2750000.0, "fin": 98.2, "phy": 100.0,
-            "status": "Completed", "risk": 12.0, "level": "LOW",
-            "reasons": ["Timely completion within approved limits."],
-            "actions": ["Routine post-audit."]
-        },
-        {
-            "id": "MPLAD-TN-2023-008",
-            "name": "Construction of Fish Landing Shed and Cold Storage Buffer",
-            "state": "Tamil Nadu", "const": "RAMANATHAPURAM", "dist": "Ramanathapuram", "loc": "Rameswaram Coast",
-            "lat": 9.2876, "lng": 79.3129, "type": "Community Infrastructure",
-            "sanc": 4800000.0, "rev": 5900000.0, "exp": 5400000.0, "fin": 91.5, "phy": 60.0,
-            "status": "Delayed", "risk": 72.0, "level": "HIGH",
-            "reasons": [
-                "Financial release outstripping physical progress by 31.5%.",
-                "Delay of 98 days due to coastal regulatory clarification disputes."
-            ],
-            "actions": [
-                "Verify equipment procurement invoice versus warehouse stock.",
-                "Review revised estimate sanction."
-            ]
-        },
-        # West Bengal
-        {
-            "id": "MPLAD-WB-2023-009",
-            "name": "Construction of Multipurpose Cyclone Shelter & Community Storage",
-            "state": "West Bengal", "const": "DIAMOND HARBOUR", "dist": "South 24 Parganas", "loc": "Kakdwip Coastal Belt",
-            "lat": 21.8764, "lng": 88.1882, "type": "Community Infrastructure",
-            "sanc": 5500000.0, "rev": 6900000.0, "exp": 6500000.0, "fin": 94.2, "phy": 58.0,
-            "status": "Delayed", "risk": 82.0, "level": "HIGH",
-            "reasons": [
-                "Financial expenditure (94.2%) is severely mismatched with physical completion (58.0%).",
-                "Cost overrun of +25.4% over initial sanction."
-            ],
-            "actions": [
-                "Direct inspection by State Nodal Officer.",
-                "Reconcile contractor measurement sheets."
-            ]
-        },
-        # Rajasthan
-        {
-            "id": "MPLAD-RJ-2023-010",
-            "name": "Creation of Water Harvesting Structures (Check Dams & Anicuts)",
-            "state": "Rajasthan", "const": "JAIPUR", "dist": "Jaipur", "loc": "Jamwa Ramgarh",
-            "lat": 26.9124, "lng": 75.7873, "type": "Irrigation & Water Conservation",
-            "sanc": 3800000.0, "rev": 3800000.0, "exp": 3720000.0, "fin": 97.8, "phy": 98.0,
-            "status": "Completed", "risk": 16.0, "level": "LOW",
-            "reasons": ["Work executed within budget with high water table recharge impact."],
-            "actions": ["Routine monitoring."]
-        },
-        # Kerala
-        {
-            "id": "MPLAD-KL-2023-011",
-            "name": "Establishment of Advanced Computer Lab & Smart Classrooms in Govt Vocational HSS",
-            "state": "Kerala", "const": "THIRUVANANTHAPURAM", "dist": "Thiruvananthapuram", "loc": "Nedumangad",
-            "lat": 8.5241, "lng": 76.9366, "type": "Education",
-            "sanc": 2200000.0, "rev": 2200000.0, "exp": 2180000.0, "fin": 99.1, "phy": 100.0,
-            "status": "Completed", "risk": 14.0, "level": "LOW",
-            "reasons": ["Complete asset delivery verified with school principal sign-off."],
-            "actions": ["Post-completion audit."]
-        },
-        # Karnataka
-        {
-            "id": "MPLAD-KA-2023-012",
-            "name": "Construction of Veterinary Dispensary and Cattle Artificial Insemination Centre",
-            "state": "Karnataka", "const": "BANGALORE RURAL", "dist": "Bengaluru Rural", "loc": "Doddaballapur",
-            "lat": 13.2929, "lng": 77.5431, "type": "Animal Husbandry",
-            "sanc": 2100000.0, "rev": 2550000.0, "exp": 2300000.0, "fin": 90.2, "phy": 59.0,
-            "status": "In Progress", "risk": 64.0, "level": "ELEVATED",
-            "reasons": [
-                "Financial releases outpace physical construction by 31.2%.",
-                "Delay in civil superstructure casting."
-            ],
-            "actions": ["Inspection of structural framework by DRDA Assistant Executive Engineer."]
-        },
-        # Odisha
-        {
-            "id": "MPLAD-OD-2023-013",
-            "name": "Rural Electrification & Transformer Installation in Tribal Hamlets",
-            "state": "Odisha", "const": "SAMBALPUR", "dist": "Sambalpur", "loc": "Kuchinda Block",
-            "lat": 21.4669, "lng": 83.9812, "type": "Power & Energy",
-            "sanc": 3100000.0, "rev": 3100000.0, "exp": 2980000.0, "fin": 96.1, "phy": 98.0,
-            "status": "Completed", "risk": 19.0, "level": "LOW",
-            "reasons": ["Grid energization certified by DISCOM."],
-            "actions": ["Routine filing."]
-        }
+    # ========================================================
+    # 3. DIVERSE DEMO PROJECTS ACROSS INDIA (SDGs, Categories, States)
+    # ========================================================
+    demo_scenarios = [
+        ("Drinking Water Installation (RO Plant)", "Gujarat", "Ahmedabad", 1200000.0, 1680000.0, 1680000.0, 100.0, 45.0, "Delayed", True, "Cost Escalation & Stalled Filter Installation"),
+        ("Construction of Secondary School Science Lab", "Maharashtra", "Pune", 2500000.0, 2500000.0, 2450000.0, 98.0, 98.0, "Completed", False, "Normal Compliant Project"),
+        ("Primary Health Sub-Centre Renovation", "Bihar", "Patna", 1500000.0, 1500000.0, 1200000.0, 80.0, 35.0, "In Progress", True, "Progress Divergence & Delay"),
+        ("Rural Connectivity Road & Paver Block Work", "Rajasthan", "Jaipur", 3500000.0, 3500000.0, 3100000.0, 88.5, 90.0, "Completed", False, "Normal Compliant Road"),
+        ("High-Mast Solar Lighting Array", "Tamil Nadu", "Chennai", 850000.0, 850000.0, 800000.0, 94.1, 95.0, "Completed", False, "Normal Renewable Energy Work"),
+        ("Sanitation Complex & Bio-Toilet Block", "Madhya Pradesh", "Bhopal", 1100000.0, 1450000.0, 1450000.0, 100.0, 50.0, "Delayed", True, "Cost Overrun & Delay Anomaly"),
+        ("Panchayat Community Hall Construction", "West Bengal", "Kolkata", 1800000.0, 1800000.0, 1350000.0, 75.0, 75.0, "In Progress", False, "Standard Progress"),
+        ("Anganwadi Centre Building Construction", "Karnataka", "Bengaluru", 1400000.0, 1400000.0, 1400000.0, 100.0, 100.0, "Completed", False, "Completed Asset"),
+        ("Veterinary Dispensary Facility Extension", "Punjab", "Ludhiana", 950000.0, 950000.0, 850000.0, 89.4, 40.0, "Delayed", True, "Progress Mismatch (89% vs 40%)"),
+        ("Public Library Digital Centre", "Kerala", "Thiruvananthapuram", 1600000.0, 1600000.0, 1500000.0, 93.7, 95.0, "Completed", False, "Exemplary Completion"),
+        ("Drainage & Flood Mitigation Culvert", "Assam", "Guwahati", 2200000.0, 2200000.0, 1980000.0, 90.0, 48.0, "Delayed", True, "Monsoon Washout & Progress Lag"),
+        ("Open Gymnasium & Sports Equipment Installation", "Delhi", "New Delhi", 750000.0, 750000.0, 750000.0, 100.0, 100.0, "Completed", False, "Completed Urban Fitness Work")
     ]
 
-    for item in sample_definitions:
-        mp = find_mp(item["state"], item["const"]) or mps[0]
+    for idx, (wname, st_name, dist_name, sanc, rev, exp, fin_p, phy_p, stat, is_high, note) in enumerate(demo_scenarios, start=3):
+        mp_obj = find_mp(st_name, dist_name) or mps[idx % len(mps)]
+        sdg_label, cat_label = map_sdg_and_category(wname)
+        
+        pid = f"MPLAD-{st_name[:2].upper()}-2023-{idx:03d}"
         proj = Project(
-            project_id=item["id"],
-            work_name=item["name"],
-            mp_id=mp.id,
-            state=item["state"],
-            constituency=item["const"],
-            district=item["dist"],
-            location=item["loc"],
-            latitude=item["lat"],
-            longitude=item["lng"],
-            work_type=item["type"],
-            sanctioned_amount=item["sanc"],
-            estimated_cost=item["sanc"],
-            revised_cost=item["rev"],
-            expenditure=item["exp"],
-            financial_progress=item["fin"],
-            physical_progress=item["phy"],
-            sanction_date="2023-05-10",
-            start_date="2023-06-15",
-            expected_completion="2024-03-31" if item["status"] != "Completed" else "2023-12-15",
-            completion_date="2023-12-20" if item["status"] == "Completed" else None,
-            implementing_agency="District Rural Development Agency (DRDA)" if "Rural" in item["name"] else "Public Works Department (PWD)",
-            status=item["status"],
+            project_id=pid,
+            work_name=f"{wname} — {dist_name}",
+            mp_id=mp_obj.id,
+            state=st_name,
+            constituency=dist_name,
+            district=dist_name,
+            location=f"Sector {idx}, {dist_name} Municipal Division",
+            latitude=22.0 + (idx * 0.7) % 6.0,
+            longitude=75.0 + (idx * 0.9) % 12.0,
+            work_type=wname.split("(")[0].strip(),
+            work_category=cat_label,
+            sdg_goal=sdg_label,
+            sanctioned_amount=sanc,
+            estimated_cost=sanc,
+            revised_cost=rev,
+            expenditure=exp,
+            financial_progress=fin_p,
+            physical_progress=phy_p,
+            sanction_date="2023-05-15",
+            start_date="2023-06-20",
+            expected_completion="2024-03-31",
+            completion_date="2024-04-10" if stat == "Completed" else None,
+            implementing_agency="District Rural Development Agency (DRDA)" if idx % 2 == 0 else "Public Works Department",
+            status=stat,
             source="Demonstration Dataset",
+            source_name="Demonstration Simulation Store (SIH Problem Statement Demo)",
+            source_url="https://mplads.gov.in",
+            source_record_id=f"DEMO-REC-{idx:03d}",
+            data_version="v2026.1-Demo",
+            ingestion_batch_id="BATCH-DEMO-SIM-01",
             is_demo=True
         )
         db.add(proj)
         db.flush()
 
         # Payments
-        p1 = item["exp"] * 0.4
-        p2 = item["exp"] * 0.6
         db.add(Payment(
-            payment_id=f"PAY-{item['id']}-1",
+            payment_id=f"PAY-{idx:03d}-01",
             project_id=proj.project_id,
-            payment_date="2023-07-01",
-            amount=p1,
-            vendor_reference="Registered District Contractor",
-            payment_stage="Initial Milestone"
+            payment_date="2023-07-10",
+            amount=round(exp * 0.5, 2),
+            vendor_reference=f"M/s {st_name} Infrastructure Ltd",
+            payment_stage="Milestone 1 Disbursement"
         ))
-        db.add(Payment(
-            payment_id=f"PAY-{item['id']}-2",
-            project_id=proj.project_id,
-            payment_date="2023-11-20",
-            amount=p2,
-            vendor_reference="Registered District Contractor",
-            payment_stage="Interim Milestone"
-        ))
+        if exp > exp * 0.5:
+            db.add(Payment(
+                payment_id=f"PAY-{idx:03d}-02",
+                project_id=proj.project_id,
+                payment_date="2023-11-20",
+                amount=round(exp * 0.5, 2),
+                vendor_reference=f"M/s {st_name} Infrastructure Ltd",
+                payment_stage="Milestone 2 Disbursement"
+            ))
 
         # Progress update
         db.add(ProgressUpdate(
             project_id=proj.project_id,
-            date="2023-10-15",
-            physical_progress=item["phy"] * 0.6,
-            financial_progress=item["fin"] * 0.7,
-            remarks="Periodic inspection recorded."
+            date="2023-12-15",
+            physical_progress=phy_p,
+            financial_progress=fin_p,
+            remarks=note
         ))
 
         # Risk Assessment
+        if is_high:
+            r_score = round(72.0 + (idx % 12), 1)
+            r_lvl = "CRITICAL" if r_score >= 85 else "HIGH"
+            gap = fin_p - phy_p
+            r_exp = [
+                f"Financial disbursement ({fin_p:.1f}%) significantly exceeds physical progress ({phy_p:.1f}%) by {gap:.1f}%.",
+                f"Cost revised by +{((rev - sanc)/sanc)*100:.1f}% over original sanctioned allocation."
+            ]
+            r_act = ["Issue notice to DRDA nodal engineer.", "Conduct spot field inspection."]
+            ew_lvl = "High"
+            ew_sigs = [f"Milestone mismatch gap of {gap:.1f}% requires technical review."]
+        else:
+            r_score = round(15.0 + (idx % 15), 1)
+            r_lvl = "LOW"
+            r_exp = ["Work proceeding within approved technical and financial milestones."]
+            r_act = ["Maintain standard post-completion asset register."]
+            ew_lvl = "Informational"
+            ew_sigs = ["Progress metrics align with standard operating timeline."]
+
         db.add(RiskAssessment(
             project_id=proj.project_id,
-            risk_score=item["risk"],
-            risk_level=item["level"],
-            anomaly_score=item["risk"] * 0.9,
-            delay_score=item["risk"] * 0.95 if item["status"] == "Delayed" else 10.0,
-            cost_overrun_score=((item["rev"] - item["sanc"]) / item["sanc"] * 100.0) if item["rev"] > item["sanc"] else 5.0,
-            duplicate_score=15.0,
-            payment_anomaly_score=item["risk"] * 0.85 if item["risk"] > 50 else 10.0,
-            progress_mismatch_score=max(0.0, item["fin"] - item["phy"]),
-            public_concern_score=60.0 if item["risk"] > 70 else 10.0,
-            confidence=0.88,
-            explanation=json.dumps(item["reasons"]),
-            recommended_actions=json.dumps(item["actions"])
-        ))
-
-    # Add 25 more diverse projects automatically linked across states for high information density
-    work_types = [
-        "Drinking Water", "Education", "Health & Sanitation", "Roads & Bridges",
-        "Community Infrastructure", "Irrigation & Water Conservation", "Sports Facilities"
-    ]
-    for i in range(14, 45):
-        mp_idx = i % len(mps)
-        curr_mp = mps[mp_idx]
-        wtype = work_types[i % len(work_types)]
-        status_choice = "Completed" if i % 3 == 0 else ("Delayed" if i % 4 == 0 else "In Progress")
-        sanc = round(1500000.0 + (i * 125000.0), -4)
-        is_high_risk = (i % 7 == 0)
-        
-        if is_high_risk:
-            rev = sanc * 1.32
-            exp = rev * 0.92
-            fin_prog = 92.0
-            phy_prog = 46.0
-            risk_score = 86.0
-            risk_lvl = "CRITICAL"
-            reasons = [
-                "Financial progress (92%) outpaces physical work (46%) by 46 percentage points.",
-                f"Expenditure of ₹{exp/100000:.2f}L exceeds initial sanction by 32%.",
-                "Unusual milestone payment pattern detected."
-            ]
-            actions = [
-                "Immediate freeze on unspent project funds.",
-                "Mandatory physical inspection by District Collectorate audit team."
-            ]
-        else:
-            rev = sanc
-            exp = sanc * 0.85 if status_choice == "Completed" else sanc * 0.55
-            fin_prog = 95.0 if status_choice == "Completed" else 58.0
-            phy_prog = 96.0 if status_choice == "Completed" else 55.0
-            risk_score = 18.0 if status_choice == "Completed" else 35.0
-            risk_lvl = "LOW" if risk_score < 30 else "MODERATE"
-            reasons = ["Project expenditure tracking within acceptable variance of physical completion."]
-            actions = ["Routine monitoring and milestone compliance."]
-
-        p = Project(
-            project_id=f"MPLAD-{curr_mp.state[:2].upper()}-2023-{i:03d}",
-            work_name=f"Development of {wtype} Scheme — Sector {i}",
-            mp_id=curr_mp.id,
-            state=curr_mp.state,
-            constituency=curr_mp.constituency or f"Constituency {i}",
-            district=curr_mp.constituency or "Central District",
-            location=f"Block {i % 12 + 1}, Rural Circle",
-            latitude=20.5937 + ((i % 10) - 5) * 0.8,
-            longitude=78.9629 + ((i % 8) - 4) * 0.9,
-            work_type=wtype,
-            sanctioned_amount=sanc,
-            estimated_cost=sanc,
-            revised_cost=rev,
-            expenditure=exp,
-            financial_progress=fin_prog,
-            physical_progress=phy_prog,
-            sanction_date="2023-04-18",
-            start_date="2023-05-20",
-            expected_completion="2024-02-28",
-            completion_date="2024-03-01" if status_choice == "Completed" else None,
-            implementing_agency="District Rural Development Agency (DRDA)",
-            status=status_choice,
-            source="Demonstration Dataset",
-            is_demo=True
-        )
-        db.add(p)
-        db.flush()
-
-        db.add(RiskAssessment(
-            project_id=p.project_id,
-            risk_score=risk_score,
-            risk_level=risk_lvl,
-            anomaly_score=risk_score * 0.9,
-            delay_score=75.0 if status_choice == "Delayed" else 15.0,
-            cost_overrun_score=32.0 if is_high_risk else 0.0,
+            risk_score=r_score,
+            risk_level=r_lvl,
+            anomaly_score=r_score * 0.9,
+            delay_score=70.0 if stat == "Delayed" else 10.0,
+            cost_overrun_score=40.0 if rev > sanc else 0.0,
             duplicate_score=10.0,
-            payment_anomaly_score=80.0 if is_high_risk else 12.0,
-            progress_mismatch_score=max(0.0, fin_prog - phy_prog),
-            public_concern_score=55.0 if is_high_risk else 5.0,
-            confidence=0.89,
-            explanation=json.dumps(reasons),
-            recommended_actions=json.dumps(actions)
+            payment_anomaly_score=65.0 if is_high else 10.0,
+            progress_mismatch_score=max(0.0, fin_p - phy_p),
+            public_concern_score=40.0 if is_high else 5.0,
+            peer_median_cost=sanc,
+            peer_avg_cost=sanc * 1.05,
+            peer_p90_cost=sanc * 1.25,
+            peer_deviation_pct=round(((exp - sanc)/sanc)*100, 1) if exp > sanc else 0.0,
+            peer_anomaly_level="High" if is_high else "Normal",
+            priority_score=round(r_score * 0.85, 1),
+            priority_breakdown=json.dumps({"risk": r_score, "explanation": note}),
+            early_warning_level=ew_lvl,
+            early_warning_signals=json.dumps(ew_sigs),
+            confidence=0.88,
+            explanation=json.dumps(r_exp),
+            recommended_actions=json.dumps(r_act)
         ))
+
+        # Seed sample investigations for high-risk projects
+        if is_high and idx in (3, 5, 8, 13):
+            statuses = {3: "Field Inspection", 5: "Action Required", 8: "Resolved", 13: "False Positive"}
+            inv_st = statuses.get(idx, "New")
+            inv_id = f"INV-{st_name[:2].upper()}-2024-{idx:03d}"
+            db.add(Investigation(
+                investigation_id=inv_id,
+                project_id=proj.project_id,
+                risk_level=r_lvl,
+                risk_score=r_score,
+                priority_score=round(r_score * 0.85, 1),
+                reason_for_flag=note,
+                assigned_officer=f"Shri A. K. Sharma (DO-{dist_name})",
+                assigned_officer_role="District Nodal Officer",
+                assigned_by="State Nodal Officer",
+                created_date=datetime.utcnow() - timedelta(days=20),
+                due_date="2026-10-15",
+                current_status=inv_st,
+                officer_notes=f"Field verification team dispatched to {dist_name}.",
+                findings="Inspection report filed. Physical progress verification confirmed discrepancy." if inv_st in ("Action Required", "Resolved") else None,
+                corrective_action="Revised milestone schedule mandated and penalty clause invoked." if inv_st == "Resolved" else None,
+                closure_reason="Resolved with contractor compliance" if inv_st == "Resolved" else ("Verified legitimate variation due to terrain" if inv_st == "False Positive" else None),
+                resolution_date=datetime.utcnow() - timedelta(days=2) if inv_st in ("Resolved", "False Positive") else None,
+                is_demo=True
+            ))
 
     db.commit()
-    print("Demonstration projects generated successfully.")
+
+    # Re-evaluate all projects through Risk Engine for peer metrics and duplicate signals
+    risk_engine.evaluate_all_projects(db)
+    print("Demonstration projects and investigation workflow generated successfully.")

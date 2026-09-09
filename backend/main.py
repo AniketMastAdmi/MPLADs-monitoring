@@ -58,6 +58,13 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api")
 
+# Static mounting for uploaded field verification evidence (Phase 6)
+from fastapi.staticfiles import StaticFiles
+uploads_dir = os.path.join(os.getcwd(), "backend", "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+
 @app.get("/")
 def root_check():
     return {

@@ -1,3 +1,11 @@
+export type DataMode = 'all' | 'official' | 'demo';
+
+export type UserRole = 
+  | 'PUBLIC / CITIZEN'
+  | 'DISTRICT OFFICER'
+  | 'STATE ADMIN / NODAL OFFICER'
+  | 'MINISTRY / SUPER ADMIN';
+
 export interface MP {
   id: number;
   original_name: string;
@@ -43,6 +51,19 @@ export interface RiskAssessment {
   similar_project_id?: string;
   similar_project_name?: string;
   similarity_percentage?: number;
+  similarity_distance_km?: number;
+  similarity_cost_pct?: number;
+  similarity_time_gap_months?: number;
+  similarity_risk_level?: string;
+  peer_median_cost?: number;
+  peer_avg_cost?: number;
+  peer_p90_cost?: number;
+  peer_deviation_pct?: number;
+  peer_anomaly_level?: string;
+  priority_score?: number;
+  priority_breakdown?: Record<string, any>;
+  early_warning_level?: string;
+  early_warning_signals?: string[];
   disclaimer?: string;
 }
 
@@ -62,6 +83,63 @@ export interface ProgressUpdateRecord {
   remarks?: string;
 }
 
+export interface RiskHistoryPoint {
+  recorded_at: string;
+  risk_score: number;
+  financial_progress: number;
+  physical_progress: number;
+  expenditure: number;
+  risk_level: string;
+  trigger_event?: string;
+}
+
+export interface InvestigationEvidence {
+  id: number;
+  investigation_id: string;
+  project_id: string;
+  evidence_type: string;
+  file_name: string;
+  file_url: string;
+  file_hash?: string;
+  expected_latitude?: number;
+  expected_longitude?: number;
+  observed_latitude?: number;
+  observed_longitude?: number;
+  distance_difference_meters?: number;
+  gps_timestamp?: string;
+  uploaded_by: string;
+  uploaded_by_role: string;
+  uploaded_at: string;
+  notes?: string;
+  visual_assessment?: string;
+  visual_mismatch_flag?: boolean;
+}
+
+export interface Investigation {
+  investigation_id: string;
+  project_id: string;
+  work_name?: string;
+  state?: string;
+  district?: string;
+  risk_level: string;
+  risk_score: number;
+  priority_score: number;
+  reason_for_flag: string;
+  assigned_officer?: string;
+  assigned_officer_role?: string;
+  assigned_by?: string;
+  created_date: string;
+  due_date?: string;
+  resolution_date?: string;
+  current_status: string; // New, Assigned, Under Verification, Field Inspection, Evidence Review, Action Required, Resolved, Closed, False Positive
+  officer_notes?: string;
+  findings?: string;
+  corrective_action?: string;
+  closure_reason?: string;
+  is_demo: boolean;
+  evidences: InvestigationEvidence[];
+}
+
 export interface ProjectCard {
   project_id: string;
   work_name: string;
@@ -70,6 +148,8 @@ export interface ProjectCard {
   district: string;
   constituency?: string;
   work_type: string;
+  work_category?: string;
+  sdg_goal?: string;
   sanctioned_amount: number;
   expenditure: number;
   physical_progress: number;
@@ -78,6 +158,8 @@ export interface ProjectCard {
   expected_completion?: string;
   risk_score: number;
   risk_level: string;
+  priority_score?: number;
+  source?: string;
   is_demo: boolean;
 }
 
@@ -94,10 +176,21 @@ export interface ProjectDetail extends ProjectCard {
   completion_date?: string;
   implementing_agency: string;
   source: string;
-  feedback_count: number;
+  source_name?: string;
+  source_url?: string;
+  source_record_id?: string;
+  imported_at?: string;
+  retrieved_at?: string;
+  last_updated_at?: string;
+  data_version?: string;
+  ingestion_batch_id?: string;
+  feedback_count?: number;
   risk?: RiskAssessment;
   payments: PaymentRecord[];
   progress_updates: ProgressUpdateRecord[];
+  risk_history: RiskHistoryPoint[];
+  investigations: Investigation[];
+  evidences: InvestigationEvidence[];
 }
 
 export interface PriorityQueueItem {
@@ -110,8 +203,10 @@ export interface PriorityQueueItem {
   risk_score: number;
   risk_level: string;
   priority_rank_score: number;
+  work_category?: string;
   primary_flags: string[];
   public_reports_count: number;
+  is_demo?: boolean;
 }
 
 export interface NationalAnalytics {
@@ -124,17 +219,18 @@ export interface NationalAnalytics {
   in_progress_works: number;
   delayed_works: number;
   high_risk_works: number;
+  critical_investigations: number;
+  overdue_investigations: number;
   public_reports_count: number;
-  high_risk_states: { state: string; total_works: number; avg_risk: number }[];
-  work_type_distribution: { work_type: string; count: number; expenditure: number }[];
-  risk_level_distribution: { level: string; count: number }[];
+  data_quality_score: number;
+  last_data_update: string;
+  high_risk_states: { state: string; count: number; rate: number }[];
+  work_type_distribution: { type: string; count: number }[];
+  risk_level_distribution: { level: string; count: number; color: string }[];
   source_transparency: {
-    primary_source: string;
-    mp_allocation_datasets: string;
-    coverage_date: string;
-    project_records_type: string;
-    last_updated: string;
-    disclaimer: string;
+    source_datasets: string;
+    ingestion_method: string;
+    health_score: number;
   };
 }
 
@@ -149,6 +245,92 @@ export interface StateAnalyticsItem {
   completed_projects: number;
   delayed_projects: number;
   high_risk_projects: number;
+  avg_cost_deviation: number;
+  public_feedback_count: number;
+  investigation_closure_rate: number;
+}
+
+export interface DataHealthFreshness {
+  source_name: string;
+  source_url: string;
+  last_synchronization: string;
+  data_coverage_period: string;
+  total_records: number;
+  validated_records: number;
+  rejected_records: number;
+  duplicate_records: number;
+  incomplete_records: number;
+  manual_review_records: number;
+  quality_score: number;
+  batch_id: string;
+  status: string;
+  provenance_details: Record<string, any>;
+}
+
+export interface ProvenanceDetail {
+  project_id: string;
+  work_name: string;
+  source: string;
+  source_name: string;
+  source_url: string;
+  source_record_id: string;
+  data_mode: string;
+  imported_at: string;
+  retrieved_at: string;
+  last_updated_at: string;
+  data_version: string;
+  ingestion_batch_id: string;
+  implementing_agency: string;
+  is_demo: boolean;
+  audit_trace: {
+    immutable_record_hash: string;
+    disclaimer: string;
+  };
+}
+
+export interface ModelEvaluationMetrics {
+  is_synthetic_evaluation: boolean;
+  evaluation_dataset_name: string;
+  evaluated_records_count: number;
+  known_anomalies_count: number;
+  correctly_detected_count: number;
+  precision: number;
+  recall: number;
+  f1_score: number;
+  false_positive_rate: number;
+  disclaimer: string;
+}
+
+export interface SDGAnalytics {
+  sdg_distribution: {
+    sdg_goal: string;
+    project_count: number;
+    sanctioned_amount: number;
+    expenditure: number;
+    utilization_pct: number;
+  }[];
+  total_sanctioned_mapped: number;
+}
+
+export interface AuditLogItem {
+  id: number;
+  actor: string;
+  role: string;
+  action: string;
+  record_id?: string;
+  investigation_id?: string;
+  old_value?: string;
+  new_value?: string;
+  details?: string;
+  timestamp: string;
+}
+
+export interface PublicConcernCluster {
+  total_complaints: number;
+  concern_level: string;
+  top_issues: { issue: string; count: number; percentage: number }[];
+  status_breakdown: Record<string, number>;
+  anti_spam_safeguards?: string;
 }
 
 export interface FeedbackSubmission {
@@ -170,4 +352,10 @@ export interface NLQueryResponse {
   data_summary: Record<string, any>;
   results: any[];
   confidence: number;
+  data_source: string;
+  records_analyzed_count: number;
+  filters_applied: string;
+  time_period: string;
+  aggregation_method: string;
+  calculation_notes: string;
 }

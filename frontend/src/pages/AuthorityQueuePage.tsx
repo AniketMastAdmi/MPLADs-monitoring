@@ -3,21 +3,25 @@ import {
   ShieldAlert, AlertTriangle, ArrowRight, Eye, 
   FileCheck, Users, TrendingUp, Filter, RefreshCw
 } from 'lucide-react';
-import { PriorityQueueItem } from '../types';
+import { PriorityQueueItem, DataMode } from '../types';
 import { fetchPriorityQueue } from '../services/api';
 
 interface AuthorityQueuePageProps {
   onSelectProject: (projectId: string) => void;
+  dataMode?: DataMode;
 }
 
-export const AuthorityQueuePage: React.FC<AuthorityQueuePageProps> = ({ onSelectProject }) => {
+export const AuthorityQueuePage: React.FC<AuthorityQueuePageProps> = ({ 
+  onSelectProject,
+  dataMode = 'all'
+}) => {
   const [queue, setQueue] = useState<PriorityQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadQueue = async () => {
     setLoading(true);
     try {
-      const data = await fetchPriorityQueue();
+      const data = await fetchPriorityQueue(dataMode);
       setQueue(data);
     } catch (err) {
       console.error(err);
@@ -28,7 +32,8 @@ export const AuthorityQueuePage: React.FC<AuthorityQueuePageProps> = ({ onSelect
 
   useEffect(() => {
     loadQueue();
-  }, []);
+  }, [dataMode]);
+
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">

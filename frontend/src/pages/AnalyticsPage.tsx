@@ -1,25 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { 
   BarChart3, Sparkles, Send, ArrowRight, Building, 
-  CheckCircle2, Clock, ShieldAlert, IndianRupee, PieChart
+  CheckCircle2, Clock, ShieldAlert, IndianRupee, PieChart,
+  Award, Globe, Layers, Check, Info
 } from 'lucide-react';
-import { NationalAnalytics, StateAnalyticsItem, NLQueryResponse } from '../types';
-import { fetchNationalAnalytics, fetchStatesAnalytics, queryNaturalLanguage } from '../services/api';
+import { NationalAnalytics, StateAnalyticsItem, NLQueryResponse, SDGAnalytics, DataMode } from '../types';
+import { 
+  fetchNationalAnalytics, fetchStatesAnalytics, queryNaturalLanguage, 
+  fetchSDGAnalytics, fetchBenchmarks 
+} from '../services/api';
 
 interface AnalyticsPageProps {
   onSelectProject: (projectId: string) => void;
   onNavigateExplore: (searchParam: string) => void;
+  dataMode?: DataMode;
 }
 
 export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
   onSelectProject,
-  onNavigateExplore
+  onNavigateExplore,
+  dataMode = 'all'
 }) => {
   const [national, setNational] = useState<NationalAnalytics | null>(null);
   const [states, setStates] = useState<StateAnalyticsItem[]>([]);
+  const [sdgData, setSdgData] = useState<SDGAnalytics | null>(null);
+  const [benchmarks, setBenchmarks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Natural Language Assistant State
+  // Natural Language Assistant State (Phase 18)
   const [nlInput, setNlInput] = useState('');
   const [nlLoading, setNlLoading] = useState(false);
   const [nlResponse, setNlResponse] = useState<NLQueryResponse | null>(null);
@@ -34,12 +42,16 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
   useEffect(() => {
     async function load() {
       try {
-        const [nat, st] = await Promise.all([
-          fetchNationalAnalytics(),
-          fetchStatesAnalytics()
+        const [nat, st, sdg, bm] = await Promise.all([
+          fetchNationalAnalytics(dataMode),
+          fetchStatesAnalytics(),
+          fetchSDGAnalytics(dataMode),
+          fetchBenchmarks(dataMode)
         ]);
         setNational(nat);
         setStates(st);
+        setSdgData(sdg);
+        setBenchmarks(bm.states || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -47,7 +59,7 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
       }
     }
     load();
-  }, []);
+  }, [dataMode]);
 
   const handleNlSubmit = async (queryText: string) => {
     if (!queryText.trim()) return;
@@ -70,13 +82,13 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-10">
       {/* Title */}
       <div>
-        <h1 className="text-2xl font-bold text-gov-navy">National & State MPLADS Analytics</h1>
+        <h1 className="text-2xl font-bold text-gov-navy">National Analytics & SDG Development Impact</h1>
         <p className="text-xs text-gray-500">
-          Executive monitoring intelligence, state drill-downs, and natural language analytical queries
+          Executive monitoring intelligence, state benchmarking, SDG allocations, and traceable natural language queries
         </p>
       </div>
 
-      {/* 1. NATURAL LANGUAGE ANALYTICS ASSISTANT (Section 28) */}
+      {/* 1. TRACEABLE NATURAL LANGUAGE ANALYTICS ASSISTANT (Phase 18) */}
       <div className="bg-white border-2 border-blue-200 rounded-lg p-6 shadow-sm space-y-4">
         <div className="flex items-center space-x-2 border-b border-gray-200 pb-3">
           <div className="p-1.5 bg-blue-50 text-gov-blue rounded">
@@ -84,10 +96,10 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
           </div>
           <div>
             <h2 className="text-sm font-bold text-gov-navy uppercase tracking-wider">
-              Natural Language Analytics Assistant
+              Natural Language Analytics Assistant (Traceable & Evidence-Backed)
             </h2>
             <p className="text-[11px] text-gray-500">
-              Query live computed database metrics in plain English. No AI hallucination — backed by strict database queries.
+              Query live computed database metrics in plain English. No AI hallucination — backed by strict database queries and verifiable provenance.
             </p>
           </div>
         </div>
@@ -135,7 +147,7 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
           ))}
         </div>
 
-        {/* Assistant Response Box */}
+        {/* Assistant Response Box with Provenance Trace (Phase 18) */}
         {nlResponse && (
           <div className="mt-4 bg-blue-50/50 border border-blue-200 rounded p-4 space-y-3 text-xs">
             <div className="flex justify-between items-start text-gov-navy">
@@ -150,6 +162,18 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
 
             <div className="p-3 bg-white border border-blue-100 rounded text-gov-charcoal leading-relaxed font-medium">
               {nlResponse.direct_answer}
+            </div>
+
+            {/* Traceability Details (Phase 18) */}
+            <div className="bg-white/80 border border-blue-200 rounded p-3 text-[11px] space-y-1 text-gray-600 font-mono">
+              <div className="flex items-center space-x-1 font-bold text-gov-blue uppercase text-[10px]">
+                <Info className="w-3.5 h-3.5" />
+                <span>Query Provenance & Calculation Methodology:</span>
+              </div>
+              <p>• Data Source: <strong>{nlResponse.data_source}</strong></p>
+              <p>• Records Analyzed: <strong>{nlResponse.records_analyzed_count}</strong> project records</p>
+              <p>• Filters Applied: <code>{nlResponse.filters_applied}</code></p>
+              <p>• Aggregation / Method: <code>{nlResponse.aggregation_method}</code></p>
             </div>
 
             {/* Results table if present */}
@@ -188,130 +212,88 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
         )}
       </div>
 
-      {/* 2. NATIONAL KPI SUMMARY & SECTORS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Sectoral Breakdown */}
-        <div className="gov-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-gov-navy uppercase tracking-wider">
-            Sectoral Work Distribution
-          </h3>
-          <div className="space-y-2.5 text-xs">
-            {national?.work_type_distribution.map((item, idx) => (
-              <div key={idx} className="space-y-1">
-                <div className="flex justify-between text-gray-700">
-                  <span>{item.work_type}</span>
-                  <span className="font-bold text-gov-navy">{item.count} works</span>
-                </div>
-                <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-gov-blue h-full"
-                    style={{ width: `${Math.min((item.count / 15) * 100, 100)}%` }}
-                  ></div>
-                </div>
-              </div>
-            ))}
+      {/* 2. SDG / DEVELOPMENT IMPACT CATEGORIZATION (Phase 17) */}
+      <div className="bg-white border border-gov-border rounded-lg p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b pb-3">
+          <div>
+            <h2 className="text-sm font-bold text-gov-navy uppercase tracking-wider flex items-center space-x-2">
+              <Globe className="w-4 h-4 text-gov-blue" />
+              <span>Sustainable Development Goals (SDG) Investment Distribution</span>
+            </h2>
+            <p className="text-[11px] text-gray-500">
+              Categorization of MPLADS infrastructure expenditure mapped to United Nations Sustainable Development Goals
+            </p>
           </div>
+          <span className="text-xs font-semibold text-gray-500">
+            Total Mapped: {sdgData ? `₹${(sdgData.total_sanctioned_mapped / 100000).toFixed(1)} Lakh` : '100%'}
+          </span>
         </div>
 
-        {/* Risk Distribution */}
-        <div className="gov-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-gov-navy uppercase tracking-wider">
-            Risk Tier Distribution
-          </h3>
-          <div className="space-y-2 text-xs">
-            {national?.risk_level_distribution.map((item, idx) => {
-              const color = item.level === 'CRITICAL' ? 'text-rose-700 font-bold' :
-                item.level === 'HIGH' ? 'text-orange-700 font-bold' :
-                item.level === 'ELEVATED' ? 'text-amber-700' : 'text-emerald-700';
-              return (
-                <div key={idx} className="flex justify-between items-center p-2 bg-gray-50 rounded border border-gray-100">
-                  <span className="font-semibold text-gray-700">{item.level}</span>
-                  <span className={color}>{item.count} projects</span>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {sdgData?.sdg_distribution.map((sdg, idx) => (
+            <div key={idx} className="border border-gray-200 rounded-lg p-4 space-y-2 bg-gray-50/50">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-xs text-gov-navy line-clamp-1">{sdg.sdg_goal}</span>
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">
+                  {sdg.project_count} Works
+                </span>
+              </div>
+              <div className="text-xs text-gray-600 space-y-0.5">
+                <div className="flex justify-between">
+                  <span>Sanctioned:</span>
+                  <span className="font-bold">₹{(sdg.sanctioned_amount / 100000).toFixed(1)} Lakh</span>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* High Risk States */}
-        <div className="gov-card p-5 space-y-4">
-          <h3 className="text-xs font-bold text-gov-navy uppercase tracking-wider">
-            States with Elevated Monitoring Needs
-          </h3>
-          <div className="space-y-2 text-xs">
-            {national?.high_risk_states.map((st, idx) => (
-              <div 
-                key={idx} 
-                className="flex justify-between items-center p-2 bg-gray-50 hover:bg-gray-100 rounded border border-gray-100 cursor-pointer"
-                onClick={() => onNavigateExplore(st.state)}
-              >
-                <div>
-                  <div className="font-bold text-gov-navy">{st.state}</div>
-                  <div className="text-[10px] text-gray-500">{st.total_works} works monitored</div>
+                <div className="flex justify-between">
+                  <span>Expenditure:</span>
+                  <span className="font-bold">₹{(sdg.expenditure / 100000).toFixed(1)} Lakh</span>
                 </div>
-                <div className="text-right">
-                  <span className="text-[11px] font-bold text-rose-700 block">Avg Risk: {st.avg_risk}</span>
-                  <span className="text-[10px] text-gov-blue hover:underline">View Works →</span>
+                <div className="flex justify-between text-emerald-700 font-semibold pt-1 border-t border-gray-200">
+                  <span>Utilization Rate:</span>
+                  <span>{sdg.utilization_pct}%</span>
                 </div>
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* 3. STATE DRILL-DOWN TABLE (Section 26) */}
-      <div className="gov-card p-6 space-y-4">
-        <div>
-          <h3 className="text-sm font-bold text-gov-navy uppercase tracking-wider">
-            State-by-State Monitoring Summary
-          </h3>
-          <p className="text-xs text-gray-500">
-            Drill-down: India → State → Constituency → Works
-          </p>
+      {/* 3. STATE & DISTRICT COMPARATIVE BENCHMARKING (Phase 16) */}
+      <div className="bg-white border border-gov-border rounded-lg p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b pb-3">
+          <div>
+            <h2 className="text-sm font-bold text-gov-navy uppercase tracking-wider flex items-center space-x-2">
+              <Layers className="w-4 h-4 text-gov-blue" />
+              <span>State & District Comparative Performance Benchmarks</span>
+            </h2>
+            <p className="text-[11px] text-gray-500">
+              Cross-regional benchmarking across utilization rates, project delay percentages, high-risk rate, and investigation closures
+            </p>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="bg-gray-50 border-b border-gray-200 text-gray-500 font-bold text-[10px] uppercase">
-                <th className="py-2.5 px-3">State / UT</th>
-                <th className="py-2.5 px-3">Hon'ble MPs</th>
-                <th className="py-2.5 px-3">Allocated Limit</th>
-                <th className="py-2.5 px-3">Sanctioned</th>
-                <th className="py-2.5 px-3">Expenditure</th>
-                <th className="py-2.5 px-3">Utilization</th>
-                <th className="py-2.5 px-3">Works</th>
-                <th className="py-2.5 px-3">High Risk</th>
-                <th className="py-2.5 px-3 text-right">Drill-down</th>
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 font-semibold uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="py-3 px-4">State</th>
+                <th className="py-3 px-4">Tracked Works</th>
+                <th className="py-3 px-4">Sanctioned Total</th>
+                <th className="py-3 px-4">Utilization Rate</th>
+                <th className="py-3 px-4">Delay Rate</th>
+                <th className="py-3 px-4">High-Risk Rate</th>
+                <th className="py-3 px-4">Investigation Closure</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {states.map((st) => (
-                <tr key={st.state} className="hover:bg-gray-50">
-                  <td className="py-2.5 px-3 font-bold text-gov-navy">{st.state}</td>
-                  <td className="py-2.5 px-3 text-gray-600">{st.mp_count} MPs</td>
-                  <td className="py-2.5 px-3 font-medium text-gov-charcoal">{formatCr(st.total_allocated)}</td>
-                  <td className="py-2.5 px-3 text-gray-600">₹{(st.total_sanctioned / 100000).toFixed(1)}L</td>
-                  <td className="py-2.5 px-3 font-bold text-gov-navy">₹{(st.total_expenditure / 100000).toFixed(1)}L</td>
-                  <td className="py-2.5 px-3 font-bold text-emerald-700">{st.utilization_percentage}%</td>
-                  <td className="py-2.5 px-3 text-gray-600">{st.total_projects}</td>
-                  <td className="py-2.5 px-3">
-                    {st.high_risk_projects > 0 ? (
-                      <span className="text-rose-700 font-bold bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded text-[10px]">
-                        {st.high_risk_projects} Flagged
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">0</span>
-                    )}
-                  </td>
-                  <td className="py-2.5 px-3 text-right">
-                    <button
-                      onClick={() => onNavigateExplore(st.state)}
-                      className="text-gov-blue hover:underline font-semibold text-xs"
-                    >
-                      Filter Works →
-                    </button>
-                  </td>
+              {benchmarks.map((bm, i) => (
+                <tr key={i} className="hover:bg-gray-50 transition">
+                  <td className="py-3 px-4 font-bold text-gov-navy">{bm.state}</td>
+                  <td className="py-3 px-4">{bm.total_projects}</td>
+                  <td className="py-3 px-4 font-mono">₹{(bm.total_sanctioned / 100000).toFixed(1)}L</td>
+                  <td className="py-3 px-4 font-bold text-emerald-700">{bm.utilization_rate}%</td>
+                  <td className="py-3 px-4 font-semibold text-amber-700">{bm.delay_rate}%</td>
+                  <td className="py-3 px-4 font-bold text-red-700">{bm.high_risk_rate}%</td>
+                  <td className="py-3 px-4 text-gray-600 font-medium">{bm.investigation_closure_rate}%</td>
                 </tr>
               ))}
             </tbody>
