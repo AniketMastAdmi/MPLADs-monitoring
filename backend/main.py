@@ -32,8 +32,14 @@ async def lifespan(app: FastAPI):
             print("[INFO] Executing multi-signal AI Risk Engine...")
             risk_engine.evaluate_all_projects(db)
             print("[INFO] Risk evaluation completed.")
+
+
+        # Seed authenticated standard users
+        from backend.services.auth_service import seed_default_users
+        seed_default_users(db)
     except Exception as e:
         print(f"[ERROR] Startup data initialization error: {e}")
+
     finally:
         db.close()
     

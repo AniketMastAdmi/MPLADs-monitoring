@@ -346,5 +346,79 @@ class NaturalLanguageQueryResponse(BaseModel):
     records_analyzed_count: int = 0
     filters_applied: str = "None"
     time_period: str = "2023 - 2026"
-    aggregation_method: str = "SQL Sum / Average / Percentile"
     calculation_notes: str = "Calculated strictly against persistent database records with zero hallucination."
+
+
+# Authentication & RBAC Schemas
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    full_name: str
+    role: str
+    designation: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+
+# Real Map Schemas
+class MapProjectItem(BaseModel):
+    project_id: str
+    work_name: str
+    latitude: float
+    longitude: float
+    state: str
+    district: str
+    sanctioned_amount: float
+    expenditure: float
+    physical_progress: float
+    financial_progress: float
+    risk_score: float
+    risk_level: str
+    status: str
+    source: Optional[str] = None
+    is_demo: bool
+    location_type: str  # "actual" or "simulated"
+
+class MapResponseSchema(BaseModel):
+    mapped_projects: List[MapProjectItem]
+    summary: Dict[str, Any]
+
+# Real CSV Import Schemas
+class CsvImportPreviewResponse(BaseModel):
+    temp_batch_id: str
+    file_name: str
+    detected_schema: str
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    duplicate_rows: int
+    warnings_count: int
+    potential_issues: List[str]
+    sample_preview: List[Dict[str, Any]]
+
+class CsvImportCommitRequest(BaseModel):
+    temp_batch_id: str
+
+class CsvImportCommitResponse(BaseModel):
+    status: str
+    message: str
+    batch_id: str
+    total_rows: int
+    valid_rows: int
+    invalid_rows: int
+    duplicate_rows: int
+    inserted_rows: int
+    updated_rows: int
+    rejected_rows: int
+    validation_errors: List[str]
+    warnings: List[str]
+    quality_score: float
+

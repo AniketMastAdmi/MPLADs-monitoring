@@ -210,16 +210,25 @@ export const ExplorePage: React.FC<ExplorePageProps> = ({
       ) : projects.length === 0 ? (
         <div className="gov-card p-12 text-center space-y-3">
           <AlertCircle className="w-8 h-8 text-gray-400 mx-auto" />
-          <h3 className="font-bold text-gov-navy text-sm">No Projects Match Your Criteria</h3>
-          <p className="text-xs text-gray-500">Try adjusting your filters or search keywords.</p>
-          <button
-            onClick={clearFilters}
-            className="px-4 py-2 bg-gov-navy text-white text-xs font-semibold rounded"
-          >
-            Reset Filters
-          </button>
+          <h3 className="font-bold text-gov-navy text-sm">
+            {dataMode === 'official' ? 'Project-Level Official Data Not Available' : 'No Projects Match Your Criteria'}
+          </h3>
+          <p className="text-xs text-gray-500 max-w-md mx-auto leading-relaxed">
+            {dataMode === 'official' 
+              ? 'Only official MP allocation registries are currently loaded. To view official project monitoring records, upload an authorized civil works CSV in Admin Ingestion, or switch to Demo Mode to inspect simulated demonstration works.'
+              : 'Try adjusting your filters or search keywords.'}
+          </p>
+          <div className="pt-2 flex justify-center gap-2">
+            <button
+              onClick={clearFilters}
+              className="px-4 py-2 bg-gov-navy text-white text-xs font-semibold rounded hover:bg-gov-navyLight"
+            >
+              Reset Filters
+            </button>
+          </div>
         </div>
       ) : (
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {projects.map((proj) => {
             const isCritical = proj.risk_level === 'CRITICAL';

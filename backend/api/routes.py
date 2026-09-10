@@ -1,15 +1,16 @@
 import os
 import json
 import hashlib
+import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Header, UploadFile, File, Form, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, desc
+from sqlalchemy import func, or_, desc, case
 from backend.models.database import get_db
 from backend.models.models import (
     MP, Project, Payment, ProgressUpdate, RiskAssessment, Feedback,
-    AuditLog, Investigation, InvestigationEvidence, RiskHistory, IngestionBatch
+    AuditLog, Investigation, InvestigationEvidence, RiskHistory, IngestionBatch, User
 )
 from backend.schemas.schemas import (
     ProjectCardSchema, ProjectDetailSchema, RiskAssessmentSchema,
@@ -18,44 +19,140 @@ from backend.schemas.schemas import (
     NaturalLanguageQueryRequest, NaturalLanguageQueryResponse,
     InvestigationResponseSchema, InvestigationCreateSchema, InvestigationUpdateSchema,
     InvestigationEvidenceSchema, DataHealthFreshnessSchema,
-    ModelEvaluationMetricsSchema, SDGAnalyticsSchema, RiskHistoryPointSchema
+    ModelEvaluationMetricsSchema, SDGAnalyticsSchema, RiskHistoryPointSchema,
+    LoginRequest, LoginResponse, UserResponse, MapResponseSchema,
+    CsvImportPreviewResponse, CsvImportCommitRequest, CsvImportCommitResponse
 )
 from backend.services.nlp_feedback import submit_citizen_feedback, get_public_concern_cluster
 from backend.services.nl_query import execute_nl_query
-from backend.services.ingestion import get_data_health_and_freshness, get_project_provenance, ingest_all_datasets
+from backend.services.ingestion import get_data_health_and_freshness, get_project_provenance, ingest_all_datasets, compute_real_data_quality
 from backend.services.demo_generator import generate_demo_dataset
 from backend.ml.risk_engine import risk_engine, DISCLAIMER_TEXT, haversine_distance_km
+from backend.services.auth_service import (
+    verify_password, generate_session_token, verify_session_token,
+    seed_default_users, ROLES
+)
 
 router = APIRouter()
 
-# --- RBAC DEPENDENCY (Phase 8) ---
-ROLES = [
-    "PUBLIC / CITIZEN",
-    "DISTRICT OFFICER",
-    "STATE ADMIN / NODAL OFFICER",
-    "MINISTRY / SUPER ADMIN"
-]
+# Temporary store for CSV import preview staging
+TEMP_IMPORT_SESSIONS: Dict[str, Dict[str, Any]] = {}
+
+# --- RBAC & AUTHENTICATION DEPENDENCY ---
+
+def get_current_user_and_role(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
+    db: Session = Depends(get_db)
+) -> tuple[Optional[User], str]:
+    """
+    Authenticates request via Bearer token.
+    If Bearer token is valid, resolves User from DB and checks active status.
+    If no Bearer token, allows read-only Public / Citizen access, or demo header role.
+    """
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        payload = verify_session_token(token)
+        if payload and "username" in payload:
+            user = db.query(User).filter_by(username=payload["username"]).first()
+            if user and user.is_active:
+                return user, user.role
+
+    # Fallback to demo role header if valid role provided
+    if x_user_role:
+        cleaned = x_user_role.strip().upper()
+        for r in ROLES:
+            if r.upper() == cleaned:
+                # Find matching user if exists
+                user = db.query(User).filter(User.role.ilike(f"%{r}%")).first()
+                return user, r
+
+    return None, "PUBLIC / CITIZEN"
 
 def get_current_user_role(
-    x_user_role: Optional[str] = Header("PUBLIC / CITIZEN", alias="X-User-Role")
+    user_and_role: tuple[Optional[User], str] = Depends(get_current_user_and_role)
 ) -> str:
-    """Extracts and validates user role from request header."""
-    role = x_user_role.strip().upper() if x_user_role else "PUBLIC / CITIZEN"
-    for r in ROLES:
-        if r.upper() == role:
-            return r
-    # Fallback to Citizen for security
-    return "PUBLIC / CITIZEN"
+    return user_and_role[1]
 
 def require_authorized_role(allowed_roles: List[str]):
-    def role_checker(role: str = Depends(get_current_user_role)):
-        if role not in allowed_roles and "MINISTRY / SUPER ADMIN" not in role:
+    def role_checker(
+        user_and_role: tuple[Optional[User], str] = Depends(get_current_user_and_role)
+    ):
+        user, role = user_and_role
+        
+        # Check permissions
+        is_ministry_admin = "MINISTRY / SUPER ADMIN" in role
+        is_allowed = any(ar.upper() == role.upper() for ar in allowed_roles) or is_ministry_admin
+        
+        if not is_allowed:
             raise HTTPException(
                 status_code=403,
                 detail=f"Access denied. Required one of roles: {', '.join(allowed_roles)}. Current role: {role}."
             )
         return role
     return role_checker
+
+
+# --- AUTHENTICATION ENDPOINTS ---
+
+@router.post("/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    """Authenticates user with username & password and returns session token."""
+    seed_default_users(db)
+    user = db.query(User).filter_by(username=payload.username.strip()).first()
+    if not user or not verify_password(payload.password, user.password_hash, user.salt):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
+
+    token = generate_session_token({
+        "sub": str(user.id),
+        "username": user.username,
+        "role": user.role,
+        "full_name": user.full_name
+    })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "full_name": user.full_name,
+            "role": user.role,
+            "designation": user.designation,
+            "state": user.state,
+            "district": user.district
+        }
+    }
+
+@router.get("/auth/me", response_model=UserResponse)
+def get_current_profile(
+    user_and_role: tuple[Optional[User], str] = Depends(get_current_user_and_role)
+):
+    """Returns currently authenticated user profile."""
+    user, role = user_and_role
+    if not user:
+        return {
+            "id": 0,
+            "username": "public_citizen",
+            "full_name": "Public / Citizen Guest",
+            "role": "PUBLIC / CITIZEN",
+            "designation": "Citizen Observer",
+            "state": None,
+            "district": None
+        }
+    return {
+        "id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "role": user.role,
+        "designation": user.designation,
+        "state": user.state,
+        "district": user.district
+    }
+
 
 
 # --- 1. PROJECTS ENDPOINTS ---
@@ -157,6 +254,85 @@ def get_projects(
         "data_mode": data_mode,
         "projects": project_cards
     }
+
+
+# --- 1B. GEOSPATIAL MAP ENDPOINT (REAL COORDINATES ONLY) ---
+
+@router.get("/map/projects", response_model=MapResponseSchema)
+def get_map_projects(
+    data_mode: str = Query("all", regex="^(all|official|demo)$"),
+    state: Optional[str] = Query(None),
+    risk_level: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns actual stored geographic coordinates for mapping.
+    Zero synthetic formulas: Never calculates substitute coordinates from financial or ID fields.
+    If coordinates are unavailable (latitude/longitude is null), projects are counted as
+    'Location not available' and excluded from the geographical pin layer.
+    Demo projects with coordinates are explicitly tagged as 'simulated'.
+    """
+    q = db.query(Project, RiskAssessment).outerjoin(
+        RiskAssessment, Project.project_id == RiskAssessment.project_id
+    )
+
+    if data_mode == "official":
+        q = q.filter(Project.is_demo == False)
+    elif data_mode == "demo":
+        q = q.filter(Project.is_demo == True)
+
+    if state and state.lower() != "all":
+        q = q.filter(Project.state.ilike(f"%{state}%"))
+    if risk_level and risk_level.lower() != "all":
+        q = q.filter(RiskAssessment.risk_level.ilike(f"%{risk_level}%"))
+
+    all_matches = q.all()
+
+    mapped_items = []
+    location_missing_count = 0
+    simulated_count = 0
+
+    for p, r in all_matches:
+        if p.latitude is not None and p.longitude is not None:
+            # Valid coordinate check
+            if -90.0 <= p.latitude <= 90.0 and -180.0 <= p.longitude <= 180.0:
+                is_sim = bool(p.is_demo)
+                if is_sim:
+                    simulated_count += 1
+                mapped_items.append({
+                    "project_id": p.project_id,
+                    "work_name": p.work_name,
+                    "latitude": p.latitude,
+                    "longitude": p.longitude,
+                    "state": p.state,
+                    "district": p.district,
+                    "sanctioned_amount": p.sanctioned_amount,
+                    "expenditure": p.expenditure,
+                    "physical_progress": p.physical_progress,
+                    "financial_progress": p.financial_progress,
+                    "risk_score": r.risk_score if r else 0.0,
+                    "risk_level": r.risk_level if r else "LOW",
+                    "status": p.status,
+                    "source": p.source,
+                    "is_demo": is_sim,
+                    "location_type": "simulated" if is_sim else "actual"
+                })
+            else:
+                location_missing_count += 1
+        else:
+            location_missing_count += 1
+
+    return {
+        "mapped_projects": mapped_items,
+        "summary": {
+            "mapped_count": len(mapped_items),
+            "location_missing_count": location_missing_count,
+            "simulated_location_count": simulated_count,
+            "total_candidates": len(all_matches),
+            "data_mode": data_mode
+        }
+    }
+
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetailSchema)
@@ -492,6 +668,14 @@ def get_investigations_summary(db: Session = Depends(get_db)):
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     overdue = sum(1 for i in all_invs if i.due_date and i.due_date < today_str and i.current_status not in ("Resolved", "Closed", "False Positive"))
 
+    # Actual average resolution days calculation
+    resolved_cases = [i for i in all_invs if i.resolution_date and i.created_date]
+    if resolved_cases:
+        total_days = sum((i.resolution_date - i.created_date).total_seconds() / 86400.0 for i in resolved_cases)
+        avg_res_days = round(max(0.1, total_days / len(resolved_cases)), 1)
+    else:
+        avg_res_days = 0.0
+
     return {
         "total_investigations": len(all_invs),
         "pending_investigations": pending,
@@ -499,8 +683,9 @@ def get_investigations_summary(db: Session = Depends(get_db)):
         "high_risk_investigations": high_risk,
         "recently_resolved_count": resolved,
         "false_positive_count": false_pos,
-        "average_resolution_days": 18.4
+        "average_resolution_days": avg_res_days
     }
+
 
 
 @router.post("/investigations", response_model=InvestigationResponseSchema)
@@ -886,7 +1071,7 @@ def get_model_evaluation(db: Session = Depends(get_db)):
 
     return {
         "is_synthetic_evaluation": True,
-        "evaluation_dataset_name": "MoSPI Synthetic Demonstration Ground Truth Benchmark (14 Calibrated Scenarios)",
+        "evaluation_dataset_name": "Synthetic Scenario Detection Performance (Demonstration Ground Truth Benchmark)",
         "evaluated_records_count": total_evaluated,
         "known_anomalies_count": tp + fn,
         "correctly_detected_count": tp,
@@ -894,8 +1079,9 @@ def get_model_evaluation(db: Session = Depends(get_db)):
         "recall": recall,
         "f1_score": f1,
         "false_positive_rate": fpr,
-        "disclaimer": "Evaluated strictly on labeled demonstration data with ground-truth synthetic injection. In official production deployments, unverified raw records lack definitive fraud labels."
+        "disclaimer": "These metrics measure agreement with predefined synthetic anomaly labels and should not be interpreted as validation on independently verified real-world cases."
     }
+
 
 
 # --- 7. SDG & DEVELOPMENT IMPACT ANALYTICS (Phase 17) ---
@@ -974,6 +1160,14 @@ def get_benchmarks(
         delay_rate = (delayed_count / max(total_p, 1)) * 100.0
         high_risk_rate = (high_risk_count / max(total_p, 1)) * 100.0
 
+        # Real investigation closure rate calculation
+        inv_total = db.query(Investigation).join(Project).filter(Project.state == st).count()
+        inv_closed = db.query(Investigation).join(Project).filter(
+            Project.state == st,
+            Investigation.current_status.in_(["Resolved", "Closed"])
+        ).count()
+        closure_rate = round((inv_closed / inv_total * 100.0), 1) if inv_total > 0 else 0.0
+
         benchmarks.append({
             "state": st,
             "total_projects": total_p,
@@ -984,7 +1178,7 @@ def get_benchmarks(
             "high_risk_rate": round(high_risk_rate, 1),
             "completion_rate": round((completed_count / max(total_p, 1)) * 100.0, 1),
             "avg_project_cost": round(total_sanc / max(total_p, 1), 2),
-            "investigation_closure_rate": 87.5
+            "investigation_closure_rate": closure_rate
         })
 
     return {
@@ -1001,7 +1195,8 @@ def get_national_analytics(
     db: Session = Depends(get_db)
 ):
     """
-    National Executive Analytics with Data Mode isolation (Phase 15).
+    National Executive Analytics computed strictly from active database.
+    Zero hardcoded percentages or fixed metrics.
     """
     total_allocated = db.query(func.sum(MP.allocation_amount)).scalar() or 0.0
 
@@ -1046,6 +1241,47 @@ def get_national_analytics(
         {"level": "LOW", "count": q_risk.filter(RiskAssessment.risk_level == "LOW").count(), "color": "#15803d"}
     ]
 
+    # Real data quality score from database
+    quality_summary = compute_real_data_quality(db)
+    dq_score = quality_summary["score"]
+
+    # Dynamic high risk states calculation (actual GROUP BY Project.state)
+    state_high_risk = db.query(
+        Project.state,
+        func.count(Project.project_id).label("total"),
+        func.sum(case((RiskAssessment.risk_score >= 70.0, 1), else_=0)).label("high_risk_count")
+    ).outerjoin(RiskAssessment, Project.project_id == RiskAssessment.project_id)
+
+    if data_mode == "official":
+        state_high_risk = state_high_risk.filter(Project.is_demo == False)
+    elif data_mode == "demo":
+        state_high_risk = state_high_risk.filter(Project.is_demo == True)
+
+    state_high_risk = state_high_risk.group_by(Project.state).all()
+
+    high_risk_states_data = []
+    for st, total_c, hr_c in state_high_risk:
+        hr_c = hr_c or 0
+        total_c = total_c or 1
+        rate = round((hr_c / total_c) * 100.0, 1)
+        if hr_c > 0:
+            high_risk_states_data.append({"state": st, "count": int(hr_c), "rate": rate})
+    high_risk_states_data.sort(key=lambda x: x["count"], reverse=True)
+
+    # Dynamic work type distribution from database
+    work_types_query = q_proj.with_entities(
+        Project.work_type,
+        func.count(Project.project_id)
+    ).group_by(Project.work_type).order_by(func.count(Project.project_id).desc()).limit(8).all()
+
+    work_type_dist = [
+        {"type": wt or "General Infrastructure", "count": int(c)}
+        for wt, c in work_types_query
+    ]
+
+    batch = db.query(IngestionBatch).order_by(IngestionBatch.imported_at.desc()).first()
+    last_update_str = batch.imported_at.strftime("%d %b %Y, %H:%M UTC") if batch and batch.imported_at else datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+
     return {
         "total_allocated": total_allocated,
         "total_sanctioned": total_sanctioned,
@@ -1059,32 +1295,22 @@ def get_national_analytics(
         "critical_investigations": critical_invs,
         "overdue_investigations": overdue_invs,
         "public_reports_count": public_reports,
-        "data_quality_score": 98.5,
-        "last_data_update": datetime.utcnow().strftime("%d %b %Y, %H:%M UTC"),
-        "high_risk_states": [
-            {"state": "Uttar Pradesh", "count": 2, "rate": 40.0},
-            {"state": "Gujarat", "count": 1, "rate": 33.3},
-            {"state": "Bihar", "count": 1, "rate": 25.0}
-        ],
-        "work_type_distribution": [
-            {"type": "Community Infrastructure", "count": 4},
-            {"type": "Drinking Water", "count": 2},
-            {"type": "Healthcare", "count": 2},
-            {"type": "Education", "count": 2},
-            {"type": "Connectivity", "count": 2}
-        ],
+        "data_quality_score": dq_score,
+        "last_data_update": last_update_str,
+        "high_risk_states": high_risk_states_data[:5],
+        "work_type_distribution": work_type_dist,
         "risk_level_distribution": rl_dist,
         "source_transparency": {
             "source_datasets": "Allocated Limit for Honble MPs (1)(1).csv & Allocated Limit for Honble MPs.csv",
             "ingestion_method": "Normalized Token Matching + Strict Paisa Parser",
-            "health_score": 98.5
+            "health_score": dq_score
         }
     }
 
 
 @router.get("/analytics/states", response_model=List[StateAnalytics])
 def get_states_analytics(db: Session = Depends(get_db)):
-    """State-wise financial and project distribution."""
+    """State-wise financial and project distribution with real SQL calculations."""
     results = db.query(
         Project.state,
         func.count(Project.project_id).label("total_projects"),
@@ -1100,25 +1326,47 @@ def get_states_analytics(db: Session = Depends(get_db)):
         high_r = db.query(RiskAssessment).join(Project).filter(Project.state == st, RiskAssessment.risk_score >= 70.0).count()
         delayed = db.query(Project).filter(Project.state == st, Project.status == "Delayed").count()
         completed = db.query(Project).filter(Project.state == st, Project.status == "Completed").count()
+        
+        # Real MP allocation count & total for this state
         mp_count = db.query(MP).filter(MP.state.ilike(f"%{st}%")).count()
+        state_alloc = db.query(func.sum(MP.allocation_amount)).filter(MP.state.ilike(f"%{st}%")).scalar() or (sanc * 1.0)
+
+        # Real calculated average cost deviation for state projects
+        state_projects = db.query(Project).filter(Project.state == st).all()
+        deviations = []
+        for sp in state_projects:
+            if sp.sanctioned_amount > 0:
+                cost = max(sp.revised_cost, sp.expenditure)
+                dev = ((cost - sp.sanctioned_amount) / sp.sanctioned_amount) * 100.0
+                deviations.append(dev)
+        avg_cost_dev = round(sum(deviations) / len(deviations), 1) if deviations else 0.0
+
+        # Real investigation closure rate for state
+        inv_count = db.query(Investigation).join(Project).filter(Project.state == st).count()
+        inv_closed = db.query(Investigation).join(Project).filter(
+            Project.state == st,
+            Investigation.current_status.in_(["Resolved", "Closed"])
+        ).count()
+        closure_rate = round((inv_closed / inv_count * 100.0), 1) if inv_count > 0 else 0.0
 
         out.append({
             "state": st,
             "mp_count": max(mp_count, 1),
-            "total_allocated": sanc * 1.15,
-            "total_sanctioned": sanc,
-            "total_expenditure": exp,
+            "total_allocated": round(state_alloc, 2),
+            "total_sanctioned": round(sanc, 2),
+            "total_expenditure": round(exp, 2),
             "utilization_percentage": round(util, 1),
             "total_projects": count,
             "completed_projects": completed,
             "delayed_projects": delayed,
             "high_risk_projects": high_r,
-            "avg_cost_deviation": 12.4,
+            "avg_cost_deviation": avg_cost_dev,
             "public_feedback_count": db.query(Feedback).join(Project).filter(Project.state == st).count(),
-            "investigation_closure_rate": 88.0
+            "investigation_closure_rate": closure_rate
         })
 
     return sorted(out, key=lambda x: x["high_risk_projects"], reverse=True)
+
 
 
 # --- 10. PRIORITY REVIEW QUEUE (Phase 12) ---
@@ -1319,8 +1567,335 @@ def run_ingestion(
 
 
 @router.post("/ml/recalculate-risk")
-def recalculate_risk_endpoint(db: Session = Depends(get_db)):
+def recalculate_risk_endpoint(
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_authorized_role(["DISTRICT OFFICER", "STATE ADMIN / NODAL OFFICER", "MINISTRY / SUPER ADMIN"]))
+):
     """Recalculates multi-signal AI risk assessment and peer benchmarks across all projects."""
     risk_engine.evaluate_all_projects(db)
     return {"status": "success", "message": "Multi-signal risk scores and peer benchmarks recalculated successfully."}
+
+
+# --- 15. REAL CSV IMPORT WORKFLOW WITH PREVIEW & COMMIT ---
+
+@router.post("/admin/import/preview", response_model=CsvImportPreviewResponse)
+async def preview_csv_import(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_authorized_role(["MINISTRY / SUPER ADMIN", "STATE ADMIN / NODAL OFFICER"]))
+):
+    """
+    Step 1 of Real CSV Import:
+    Parses file, verifies columns, validates rows, identifies duplicates and schema issues,
+    generates validation preview, and stages records temporarily for confirmation.
+    Zero fake timers or hardcoded counts.
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Invalid file type. Only .csv files are supported.")
+
+    contents = await file.read()
+    try:
+        text = contents.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = contents.decode("latin-1")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Failed to decode CSV text file.")
+
+    import io
+    import csv
+
+    reader = csv.DictReader(io.StringIO(text))
+    fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+
+    # Detect Schema
+    is_mp_alloc = any("honble" in f.lower() or "allocated limit" in f.lower() or "elected / nominated" in f.lower() for f in fieldnames)
+    is_project_schema = any("work_name" in f.lower() or "project_id" in f.lower() or "work name" in f.lower() or "work id" in f.lower() for f in fieldnames)
+
+    schema_name = "MP Allocation & Limit Baseline Dataset" if is_mp_alloc else ("MPLADS Project Monitoring Civil Works Dataset" if is_project_schema else "Generic Tabular Record Dataset")
+
+    temp_id = f"PREVIEW-{secrets.token_hex(8)}"
+    valid_rows = []
+    invalid_rows = []
+    duplicate_rows = []
+    potential_issues = []
+    warnings_count = 0
+
+    seen_ids = set()
+    existing_project_ids = {p.project_id for p in db.query(Project.project_id).all()}
+    existing_mp_ids = {m.source_record_id for m in db.query(MP.source_record_id).all() if m.source_record_id}
+
+    row_index = 1
+    sample_preview = []
+
+    for row in reader:
+        row_index += 1
+        clean_row = {k.strip(): v.strip() if v else "" for k, v in row.items()}
+        
+        # Check Project Schema validation
+        if is_project_schema:
+            p_id = clean_row.get("project_id") or clean_row.get("Project ID") or clean_row.get("work_id") or clean_row.get("Work ID")
+            w_name = clean_row.get("work_name") or clean_row.get("Work Name") or clean_row.get("Project Name")
+            state = clean_row.get("state") or clean_row.get("State")
+            district = clean_row.get("district") or clean_row.get("District")
+            sanc_str = clean_row.get("sanctioned_amount") or clean_row.get("Sanctioned Amount") or clean_row.get("Sanction Amount") or "0"
+            lat_str = clean_row.get("latitude") or clean_row.get("Latitude")
+            long_str = clean_row.get("longitude") or clean_row.get("Longitude")
+            comp_date = clean_row.get("completion_date") or clean_row.get("expected_completion") or clean_row.get("Completion Date")
+
+            if not w_name or not state or not district:
+                invalid_rows.append(f"Row {row_index}: Missing mandatory fields (work_name, state, or district)")
+                continue
+
+            # Project ID generation or validation
+            if not p_id:
+                p_id = f"PRJ-{state[:2].upper()}-{abs(hash(w_name)) % 100000:05d}"
+                warnings_count += 1
+                potential_issues.append(f"Row {row_index}: Missing project_id; autogenerated ID {p_id}")
+
+            # Duplicate detection
+            if p_id in seen_ids or p_id in existing_project_ids:
+                duplicate_rows.append(p_id)
+                potential_issues.append(f"Row {row_index}: Duplicate project identifier '{p_id}' detected")
+                continue
+            seen_ids.add(p_id)
+
+            # Amount validation
+            try:
+                sanc_val = float(str(sanc_str).replace(",", "").replace("₹", "").strip())
+                if sanc_val < 0:
+                    invalid_rows.append(f"Row {row_index}: Negative sanctioned amount ({sanc_val})")
+                    continue
+            except Exception:
+                invalid_rows.append(f"Row {row_index}: Invalid numeric sanctioned amount '{sanc_str}'")
+                continue
+
+            # Missing latitude warning
+            if not lat_str or not long_str:
+                warnings_count += 1
+                if len(potential_issues) < 20:
+                    potential_issues.append(f"Row {row_index} ({p_id}): Missing geographic coordinates")
+
+            parsed_record = {
+                "project_id": p_id,
+                "work_name": w_name,
+                "state": state,
+                "district": district,
+                "constituency": clean_row.get("constituency") or clean_row.get("Constituency"),
+                "sanctioned_amount": sanc_val,
+                "expenditure": float(str(clean_row.get("expenditure", 0)).replace(",", "").replace("₹", "").strip() or 0.0),
+                "physical_progress": float(clean_row.get("physical_progress", 0) or 0.0),
+                "financial_progress": float(clean_row.get("financial_progress", 0) or 0.0),
+                "latitude": float(lat_str) if lat_str else None,
+                "longitude": float(long_str) if long_str else None,
+                "work_type": clean_row.get("work_type") or clean_row.get("Work Type") or "General Works",
+                "status": clean_row.get("status") or "In Progress",
+                "expected_completion": comp_date
+            }
+            valid_rows.append(parsed_record)
+            if len(sample_preview) < 5:
+                sample_preview.append(parsed_record)
+
+        else:
+            # MP Allocation Schema or Generic fallback
+            mp_name = clean_row.get("Hon'ble MP Name") or clean_row.get("mp_name") or clean_row.get("Name")
+            state = clean_row.get("State") or clean_row.get("state")
+            limit_str = clean_row.get("Allocated Limit") or clean_row.get("allocation_amount") or clean_row.get("Limit") or "0"
+            sr_no = clean_row.get("Sr. No.") or clean_row.get("id") or str(row_index)
+
+            if not mp_name or not state:
+                invalid_rows.append(f"Row {row_index}: Missing MP name or state")
+                continue
+
+            record_key = f"MP-{state[:2].upper()}-{sr_no}"
+            if record_key in seen_ids or record_key in existing_mp_ids:
+                duplicate_rows.append(record_key)
+                continue
+            seen_ids.add(record_key)
+
+            try:
+                lim_val = float(str(limit_str).replace(",", "").replace("₹", "").strip() or 0.0)
+            except Exception:
+                invalid_rows.append(f"Row {row_index}: Invalid allocated limit amount '{limit_str}'")
+                continue
+
+            parsed_record = {
+                "source_record_id": record_key,
+                "original_name": mp_name,
+                "state": state,
+                "constituency": clean_row.get("Constituency") or "General",
+                "allocation_amount": lim_val,
+                "elected_nominated": clean_row.get("Elected / Nominated") or "Elected MP"
+            }
+            valid_rows.append(parsed_record)
+            if len(sample_preview) < 5:
+                sample_preview.append(parsed_record)
+
+    total_detected = len(valid_rows) + len(invalid_rows) + len(duplicate_rows)
+
+    # Stash in temporary cache for commit step
+    TEMP_IMPORT_SESSIONS[temp_id] = {
+        "file_name": file.filename,
+        "is_project_schema": is_project_schema,
+        "valid_rows": valid_rows,
+        "invalid_rows": invalid_rows,
+        "duplicate_rows": duplicate_rows,
+        "schema_name": schema_name,
+        "created_at": datetime.utcnow()
+    }
+
+    return {
+        "temp_batch_id": temp_id,
+        "file_name": file.filename,
+        "detected_schema": schema_name,
+        "total_rows": total_detected,
+        "valid_rows": len(valid_rows),
+        "invalid_rows": len(invalid_rows),
+        "duplicate_rows": len(duplicate_rows),
+        "warnings_count": warnings_count,
+        "potential_issues": potential_issues[:15],
+        "sample_preview": sample_preview
+    }
+
+
+@router.post("/admin/import/commit", response_model=CsvImportCommitResponse)
+def commit_csv_import(
+    payload: CsvImportCommitRequest,
+    db: Session = Depends(get_db),
+    user_role: str = Depends(require_authorized_role(["MINISTRY / SUPER ADMIN", "STATE ADMIN / NODAL OFFICER"]))
+):
+    """
+    Step 2 of Real CSV Import:
+    Commits staged verified records into active database.
+    Creates IngestionBatch, updates provenance, calculates dynamic data quality,
+    triggers risk recalculation, and logs audit event.
+    """
+    session_data = TEMP_IMPORT_SESSIONS.get(payload.temp_batch_id)
+    if not session_data:
+        raise HTTPException(status_code=404, detail="Staged import session not found or expired. Please upload and preview again.")
+
+    valid_rows = session_data["valid_rows"]
+    is_project_schema = session_data["is_project_schema"]
+    file_name = session_data["file_name"]
+
+    batch_id = f"BATCH-IMPORT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    inserted_count = 0
+    updated_count = 0
+
+    if is_project_schema:
+        for r in valid_rows:
+            existing = db.query(Project).filter_by(project_id=r["project_id"]).first()
+            if existing:
+                existing.work_name = r["work_name"]
+                existing.sanctioned_amount = r["sanctioned_amount"]
+                existing.expenditure = r["expenditure"]
+                existing.physical_progress = r["physical_progress"]
+                existing.financial_progress = r["financial_progress"]
+                existing.last_updated_at = datetime.utcnow()
+                updated_count += 1
+            else:
+                new_proj = Project(
+                    project_id=r["project_id"],
+                    work_name=r["work_name"],
+                    state=r["state"],
+                    district=r["district"],
+                    constituency=r.get("constituency"),
+                    sanctioned_amount=r["sanctioned_amount"],
+                    estimated_cost=r["sanctioned_amount"],
+                    revised_cost=r["sanctioned_amount"],
+                    expenditure=r["expenditure"],
+                    physical_progress=r["physical_progress"],
+                    financial_progress=r["financial_progress"],
+                    latitude=r["latitude"],
+                    longitude=r["longitude"],
+                    work_type=r["work_type"],
+                    status=r["status"],
+                    expected_completion=r.get("expected_completion"),
+                    source=f"Imported CSV ({file_name})",
+                    source_name=f"Official Ingested CSV File ({file_name})",
+                    source_url=None, # Honest: No fabricated URL
+                    source_record_id=r["project_id"],
+                    imported_at=datetime.utcnow(),
+                    last_updated_at=datetime.utcnow(),
+                    data_version="v2026-Imported",
+                    ingestion_batch_id=batch_id,
+                    is_demo=False # Real official/imported data
+                )
+                db.add(new_proj)
+                inserted_count += 1
+    else:
+        for r in valid_rows:
+            new_mp = MP(
+                original_name=r["original_name"],
+                normalized_name=r["original_name"],
+                state=r["state"],
+                constituency=r.get("constituency") or "General",
+                elected_nominated=r["elected_nominated"],
+                allocation_amount=r["allocation_amount"],
+                allocation_source=f"Imported CSV ({file_name})",
+                source_record_id=r["source_record_id"],
+                match_confidence=1.0
+            )
+            db.add(new_mp)
+            inserted_count += 1
+
+    # Ingestion Batch Record
+    quality_before = compute_real_data_quality(db)
+    batch = IngestionBatch(
+        batch_id=batch_id,
+        source_name=f"Imported CSV File: {file_name}",
+        source_url=None,
+        imported_at=datetime.utcnow(),
+        data_coverage_period=datetime.utcnow().strftime("FY %Y-%m"),
+        total_records=len(valid_rows) + len(session_data["invalid_rows"]) + len(session_data["duplicate_rows"]),
+        validated_records=len(valid_rows),
+        rejected_records=len(session_data["invalid_rows"]),
+        duplicate_records=len(session_data["duplicate_rows"]),
+        incomplete_records=len(session_data["invalid_rows"]),
+        manual_review_records=0,
+        quality_score=quality_before["score"],
+        status="Completed"
+    )
+    db.add(batch)
+
+    # Audit Trail
+    db.add(AuditLog(
+        actor=user_role,
+        role=user_role,
+        action="CSV_DATA_IMPORT_COMMITTED",
+        record_id=batch_id,
+        details=f"Committed {inserted_count} new rows, updated {updated_count} rows from {file_name}.",
+        timestamp=datetime.utcnow()
+    ))
+
+    db.commit()
+
+    # Recalculate AI Risk Engine
+    try:
+        risk_engine.evaluate_all_projects(db)
+    except Exception as e:
+        print(f"[WARN] Risk recalculation after import had warning: {e}")
+
+    # Remove temporary session
+    del TEMP_IMPORT_SESSIONS[payload.temp_batch_id]
+
+    # Compute final real data quality
+    final_dq = compute_real_data_quality(db)
+
+    return {
+        "status": "success",
+        "message": f"Import completed successfully. {inserted_count} records inserted, {updated_count} records updated.",
+        "batch_id": batch_id,
+        "total_rows": len(valid_rows) + len(session_data["invalid_rows"]) + len(session_data["duplicate_rows"]),
+        "valid_rows": len(valid_rows),
+        "invalid_rows": len(session_data["invalid_rows"]),
+        "duplicate_rows": len(session_data["duplicate_rows"]),
+        "inserted_rows": inserted_count,
+        "updated_rows": updated_count,
+        "rejected_rows": len(session_data["invalid_rows"]),
+        "validation_errors": session_data["invalid_rows"][:10],
+        "warnings": [f"{len(session_data['duplicate_rows'])} duplicate rows filtered"],
+        "quality_score": final_dq["score"]
+    }
+
 

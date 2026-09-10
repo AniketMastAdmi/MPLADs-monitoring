@@ -9,8 +9,28 @@ import type {
 
 const API_BASE = '/api';
 
-// Current active role for RBAC header
+// Current active role & token for RBAC
 let currentActiveRole: UserRole = 'PUBLIC / CITIZEN';
+let currentAuthToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  currentAuthToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      localStorage.setItem('mplads_auth_token', token);
+    } else {
+      localStorage.removeItem('mplads_auth_token');
+    }
+  }
+}
+
+export function getAuthToken(): string | null {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('mplads_auth_token');
+    if (saved) return saved;
+  }
+  return currentAuthToken;
+}
 
 export function setActiveRole(role: UserRole) {
   currentActiveRole = role;
@@ -27,11 +47,54 @@ export function getActiveRole(): UserRole {
   return currentActiveRole;
 }
 
-function getAuthHeaders(): HeadersInit {
-  return {
+export function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
     'X-User-Role': getActiveRole()
   };
+  const token = getAuthToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
 }
+
+// Authentication API
+export async function loginUser(credentials: { username: string; password: string }): Promise<{
+  access_token: string;
+  token_type: string;
+  user: {
+    id: number;
+    username: string;
+    full_name: string;
+    role: UserRole;
+    designation?: string;
+    state?: string;
+    district?: string;
+  };
+}> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(credentials)
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Authentication failed');
+  }
+  const data = await res.json();
+  setAuthToken(data.access_token);
+  setActiveRole(data.user.role as UserRole);
+  return data;
+}
+
+export async function fetchCurrentProfile(): Promise<any> {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch user profile');
+  return res.json();
+}
+
 
 // 1. Projects
 export async function fetchProjects(params: Record<string, string | number | boolean> = {}): Promise<{
@@ -96,24 +159,68 @@ export async function fetchDataQualityReport(): Promise<any> {
   return res.json();
 }
 
-export async function fetchMapProjects(): Promise<any[]> {
-  const res = await fetchProjects({ limit: 100 });
-  return res.projects.map(p => ({
-    project_id: p.project_id,
-    work_name: p.work_name,
-    state: p.state,
-    district: p.district,
-    latitude: 20.5937 + (p.sanctioned_amount % 50000) / 10000,
-    longitude: 78.9629 + (p.expenditure % 40000) / 8000,
-    sanctioned_amount: p.sanctioned_amount,
-    expenditure: p.expenditure,
-    physical_progress: p.physical_progress,
-    financial_progress: p.financial_progress,
-    risk_score: p.risk_score,
-    risk_level: p.risk_level,
-    status: p.status
-  }));
+export async function fetchMapProjects(params: {
+  data_mode?: string;
+  state?: string;
+  risk_level?: string;
+} = {}): Promise<{
+  mapped_projects: any[];
+  summary: {
+    mapped_count: number;
+    location_missing_count: number;
+    simulated_location_count: number;
+    total_candidates: number;
+    data_mode: string;
+  };
+}> {
+  const query = new URLSearchParams();
+  if (params.data_mode && params.data_mode !== 'all') query.append('data_mode', params.data_mode);
+  if (params.state && params.state !== 'all') query.append('state', params.state);
+  if (params.risk_level && params.risk_level !== 'all') query.append('risk_level', params.risk_level);
+
+  const res = await fetch(`${API_BASE}/map/projects?${query.toString()}`, {
+    headers: getAuthHeaders()
+  });
+  if (!res.ok) throw new Error('Failed to fetch map projects');
+  return res.json();
 }
+
+// CSV Ingestion Workflows (Preview & Commit)
+export async function previewCsvImport(file: File): Promise<any> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await fetch(`${API_BASE}/admin/import/preview`, {
+    method: 'POST',
+    headers: {
+      'X-User-Role': getActiveRole(),
+      ...(getAuthToken() ? { 'Authorization': `Bearer ${getAuthToken()}` } : {})
+    },
+    body: formData
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to generate CSV preview');
+  }
+  return res.json();
+}
+
+export async function commitCsvImport(tempBatchId: string): Promise<any> {
+  const res = await fetch(`${API_BASE}/admin/import/commit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders()
+    },
+    body: JSON.stringify({ temp_batch_id: tempBatchId })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to commit CSV import');
+  }
+  return res.json();
+}
+
 
 // 3. Human-in-the-Loop Investigations (Phase 5 & 6)
 export async function fetchInvestigations(params: Record<string, string | number> = {}): Promise<{

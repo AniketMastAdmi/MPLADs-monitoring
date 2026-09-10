@@ -120,8 +120,9 @@ export function App() {
         )}
 
         {currentTab === 'map' && (
-          <MapViewPage onSelectProject={handleSelectProject} />
+          <MapViewPage onSelectProject={handleSelectProject} dataMode={dataMode} />
         )}
+
 
         {currentTab === 'queue' && (
           <AuthorityQueuePage 

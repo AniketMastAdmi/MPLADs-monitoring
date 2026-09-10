@@ -27,23 +27,27 @@ export const ModelEvaluationPage: React.FC = () => {
       <div>
         <div className="flex items-center space-x-2">
           <Award className="w-6 h-6 text-gov-navy" />
-          <h1 className="text-2xl font-bold text-gov-navy">AI Model Performance & Evaluation</h1>
+          <h1 className="text-2xl font-bold text-gov-navy">Synthetic Scenario Detection Performance</h1>
         </div>
         <p className="text-xs text-gray-500 mt-1">
-          Objective evaluation metrics against calibrated synthetic ground truth benchmarks and official data transparency guidelines
+          Detection evaluation against calibrated synthetic ground-truth anomaly scenarios
         </p>
       </div>
 
-      {/* 1. TRANSPARENCY DISCLAIMER (Phase 13 & 23) */}
-      <div className="bg-blue-50 border-l-4 border-gov-blue p-4 rounded-r-lg shadow-sm space-y-1 text-xs text-gov-navy">
-        <div className="flex items-center space-x-2 font-bold uppercase tracking-wider text-[11px] text-gov-blue">
+      {/* 1. TRANSPARENCY DISCLAIMER */}
+      <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm space-y-1 text-xs text-amber-950">
+        <div className="flex items-center space-x-2 font-bold uppercase tracking-wider text-[11px] text-amber-800">
           <Info className="w-4 h-4" />
-          <span>Evaluation Dataset Disclosure (Zero-Hallucination Compliance)</span>
+          <span>Synthetic Benchmark Evaluation Disclosure</span>
         </div>
-        <p className="text-gray-700 leading-relaxed">
-          {metrics?.disclaimer || "Evaluated strictly on labeled demonstration data with ground-truth synthetic injection. In official production deployments, unverified raw records lack definitive fraud labels."}
+        <p className="text-amber-900 leading-relaxed font-medium">
+          "These metrics measure agreement with predefined synthetic anomaly labels and should not be interpreted as validation on independently verified real-world cases."
+        </p>
+        <p className="text-[11px] text-gray-600 mt-1">
+          {metrics?.disclaimer}
         </p>
       </div>
+
 
       {/* 2. PERFORMANCE METRIC TILES */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

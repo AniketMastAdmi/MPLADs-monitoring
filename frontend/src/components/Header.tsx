@@ -126,7 +126,26 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="text-gov-blue mr-1.5 font-bold">Role:</span>
               <select
                 value={userRole}
-                onChange={(e) => onRoleChange(e.target.value as UserRole)}
+                onChange={async (e) => {
+                  const newRole = e.target.value as UserRole;
+                  onRoleChange(newRole);
+                  // Automatically authenticate with corresponding demo backend credentials to obtain JWT token
+                  try {
+                    const roleCredentials: Record<string, { u: string; p: string }> = {
+                      'PUBLIC / CITIZEN': { u: 'citizen', p: 'citizen123' },
+                      'DISTRICT OFFICER': { u: 'officer', p: 'officer123' },
+                      'STATE ADMIN / NODAL OFFICER': { u: 'state_admin', p: 'admin123' },
+                      'MINISTRY / SUPER ADMIN': { u: 'ministry_admin', p: 'super123' }
+                    };
+                    const creds = roleCredentials[newRole];
+                    if (creds) {
+                      const { loginUser } = await import('../services/api');
+                      await loginUser({ username: creds.u, password: creds.p });
+                    }
+                  } catch (err) {
+                    console.error('Role token sync error', err);
+                  }
+                }}
                 className="bg-transparent font-semibold text-gov-navy focus:outline-none cursor-pointer text-xs"
               >
                 <option value="PUBLIC / CITIZEN">PUBLIC / CITIZEN</option>
@@ -136,6 +155,7 @@ export const Header: React.FC<HeaderProps> = ({
               </select>
             </div>
           </div>
+
 
           {/* Mobile Menu Button */}
           <div className="lg:hidden flex items-center space-x-2">
@@ -163,12 +183,13 @@ export const Header: React.FC<HeaderProps> = ({
           ) : dataMode === 'official' ? (
             <div className="flex items-center space-x-2 text-emerald-900 bg-emerald-50 border-emerald-200 w-full p-1 rounded">
               <span className="px-1.5 py-0.2 font-bold bg-emerald-700 text-white rounded text-[10px]">
-                OFFICIAL IMPORTED DATA
+                OFFICIAL / IMPORTED DATA
               </span>
               <span>
-                Displaying verified baseline records ingested from Ministry of Statistics and Programme Implementation (MoSPI) allocation datasets.
+                Displaying official MP Allocation Data ingested from MoSPI registries. If project-level official monitoring data has not been imported via CSV, project dossiers note "Project-level official data not available".
               </span>
             </div>
+
           ) : (
             <div className="flex items-center space-x-2 text-blue-900 bg-blue-50 border-blue-200 w-full p-1 rounded">
               <span className="px-1.5 py-0.2 font-bold bg-gov-blue text-white rounded text-[10px]">

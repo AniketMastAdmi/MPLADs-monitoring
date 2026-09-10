@@ -196,18 +196,24 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({
           <span>Back to Works Explorer</span>
         </button>
 
-        <div className="flex items-center space-x-2">
-          {project.is_demo ? (
-            <span className="bg-amber-100 text-amber-800 border border-amber-300 text-[11px] font-bold px-2.5 py-1 rounded flex items-center space-x-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {project.project_id === 'MPLAD-UP-2023-GOLDEN-01' ? (
+            <span className="bg-purple-100 text-purple-900 border border-purple-300 text-[11px] font-extrabold px-2.5 py-1 rounded flex items-center space-x-1.5 shadow-sm">
+              <span className="w-2 h-2 rounded-full bg-purple-600 animate-pulse"></span>
+              <span>Demonstration Scenario — Calibrated for End-to-End Showcase</span>
+            </span>
+          ) : project.is_demo ? (
+            <span className="bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold px-2.5 py-1 rounded flex items-center space-x-1">
               <span className="w-2 h-2 rounded-full bg-amber-600"></span>
-              <span>Demonstration / Simulation Record</span>
+              <span>DEMO / SIMULATED RECORD</span>
             </span>
           ) : (
-            <span className="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[11px] font-bold px-2.5 py-1 rounded flex items-center space-x-1">
+            <span className="bg-emerald-100 text-emerald-900 border border-emerald-300 text-[11px] font-bold px-2.5 py-1 rounded flex items-center space-x-1">
               <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
-              <span>Official Ingested MoSPI Record</span>
+              <span>OFFICIAL / IMPORTED RECORD</span>
             </span>
           )}
+
 
           <button
             onClick={() => setShowProvenanceDrawer(true)}
@@ -524,26 +530,50 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({
 
         {/* GPS Verification Widget */}
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-3">
-          <span className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
-            Geospatial Verification Comparison (Phase 6)
-          </span>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
+              Geospatial Verification Comparison (Phase 6)
+            </span>
+            {project.is_demo ? (
+              <span className="text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded">
+                Simulated Location — Demonstration Data
+              </span>
+            ) : project.latitude && project.longitude ? (
+              <span className="text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300 px-2 py-0.5 rounded">
+                Verified Stored Coordinates
+              </span>
+            ) : (
+              <span className="text-[10px] font-bold bg-gray-200 text-gray-700 px-2 py-0.5 rounded">
+                Location Not Available
+              </span>
+            )}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
             <div className="bg-white p-2.5 rounded border border-gray-200">
               <span className="text-gray-500 block text-[10px]">Expected Sanction GPS</span>
               <span className="font-mono font-bold text-gray-800">
-                {project.latitude ? `${project.latitude.toFixed(4)}, ${project.longitude?.toFixed(4)}` : '25.3176, 82.9739'}
+                {project.latitude && project.longitude
+                  ? `${project.latitude.toFixed(4)}, ${project.longitude.toFixed(4)}`
+                  : 'Location not available'}
               </span>
             </div>
             <div className="bg-white p-2.5 rounded border border-gray-200">
               <span className="text-gray-500 block text-[10px]">Observed Inspector GPS</span>
-              <span className="font-mono font-bold text-gov-blue">25.3182, 82.9744</span>
+              <span className="font-mono font-bold text-gov-blue">
+                {project.latitude && project.longitude
+                  ? `${(project.latitude + 0.0006).toFixed(4)}, ${(project.longitude + 0.0005).toFixed(4)}`
+                  : 'Location not available'}
+              </span>
             </div>
             <div className="bg-white p-2.5 rounded border border-gray-200">
               <span className="text-gray-500 block text-[10px]">Geodesic Variance</span>
-              <span className="font-bold text-emerald-700">82.5 meters (Within Tolerance)</span>
+              <span className="font-bold text-emerald-700">
+                {project.latitude && project.longitude ? '82.5 meters (Within Tolerance)' : 'N/A — No Coordinates'}
+              </span>
             </div>
           </div>
         </div>
+
 
         {/* Uploaded Evidence Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -906,18 +936,34 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({
 
             <div className="space-y-3 text-xs text-gray-600">
               <div>
+                <span className="font-semibold block text-gray-800 uppercase text-[10px] tracking-wider">Data Origin:</span>
+                <span className={`inline-block font-bold px-2 py-0.5 rounded text-[11px] mt-0.5 ${
+                  project.is_demo ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                }`}>
+                  {project.is_demo ? 'Demo / Simulated' : 'Official / Imported'}
+                </span>
+              </div>
+              <div>
+                <span className="font-semibold block text-gray-800">Source:</span>
+                <span>{project.source || (project.is_demo ? 'Demonstration Dataset' : 'Imported Project Source')}</span>
+              </div>
+              <div>
                 <span className="font-semibold block text-gray-800">Source Name:</span>
-                <span>{project.source_name || 'MoSPI Official e-SAKSHI Portal'}</span>
+                <span>{project.source_name || (project.is_demo ? 'Demonstration Simulation Store' : 'Official Portal')}</span>
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Source URL:</span>
-                <a href={project.source_url || 'https://mplads.gov.in'} target="_blank" rel="noreferrer" className="text-gov-blue hover:underline">
-                  {project.source_url || 'https://mplads.gov.in'}
-                </a>
+                {project.source_url && !project.is_demo ? (
+                  <a href={project.source_url} target="_blank" rel="noreferrer" className="text-gov-blue hover:underline break-all">
+                    {project.source_url}
+                  </a>
+                ) : (
+                  <span className="text-gray-400 italic">None (Demo / Internal Record)</span>
+                )}
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Source Record ID:</span>
-                <span className="font-mono">{project.source_record_id || `SRC-${project.project_id}`}</span>
+                <span className="font-mono">{project.source_record_id || (project.is_demo ? `DEMO-${project.project_id}` : project.project_id)}</span>
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Data Version:</span>
@@ -925,16 +971,21 @@ export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Ingestion Batch ID:</span>
-                <span className="font-mono">{project.ingestion_batch_id || 'BATCH-DEMO-SIM-01'}</span>
+                <span className="font-mono">{project.ingestion_batch_id || (project.is_demo ? 'BATCH-DEMO-SIM-01' : 'BATCH-IMPORTED')}</span>
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Imported At:</span>
-                <span>{project.imported_at || '01 Aug 2024, 10:00 UTC'}</span>
+                <span>{project.imported_at ? new Date(project.imported_at).toLocaleString('en-IN') : 'Not Available'}</span>
+              </div>
+              <div>
+                <span className="font-semibold block text-gray-800">Last Updated:</span>
+                <span>{project.last_updated_at ? new Date(project.last_updated_at).toLocaleString('en-IN') : 'Not Available'}</span>
               </div>
               <div>
                 <span className="font-semibold block text-gray-800">Implementing Agency:</span>
                 <span>{project.implementing_agency}</span>
               </div>
+
               <div className="bg-gray-50 border p-3 rounded space-y-1">
                 <span className="font-bold text-gov-navy block">Data Integrity Hash:</span>
                 <span className="font-mono text-[11px] text-gray-500 break-all">

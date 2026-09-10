@@ -241,34 +241,221 @@ def ingest_all_datasets(db: Session, data_dir: str) -> Dict[str, Any]:
     return summary
 
 
+def compute_real_data_quality(db: Session) -> Dict[str, Any]:
+    """
+    Real data quality engine evaluating actual imported records in the database.
+    Evaluates:
+    - Missing required fields (work_name, state, district, sanctioned_amount)
+    - Invalid numerical values (negative expenditure, negative sanctions)
+    - Invalid dates (unparseable completion dates)
+    - Invalid state/district values
+    - Duplicate source_record_id
+    - Missing project IDs
+    - Missing provenance information (source, source_name, data_version)
+    - Invalid latitude/longitude (out of bounds)
+    - Stale records
+    Returns transparent breakdown and dynamic score (0 to 100).
+    """
+    total_projects = db.query(Project).count()
+    total_mps = db.query(MP).count()
+    total_records = total_projects + total_mps
+
+    if total_records == 0:
+        return {
+            "score": 0.0,
+            "completeness": 0.0,
+            "validity": 0.0,
+            "uniqueness": 0.0,
+            "freshness": 0.0,
+            "provenance": 0.0,
+            "total_records": 0,
+            "valid_records": 0,
+            "duplicate_records": 0,
+            "incomplete_records": 0,
+            "invalid_records": 0,
+            "penalties": {}
+        }
+
+    projects = db.query(Project).all()
+    
+    # 1. Completeness Evaluation
+    incomplete_count = 0
+    missing_coords_count = 0
+    missing_provenance_count = 0
+    invalid_numbers_count = 0
+    invalid_coords_count = 0
+    invalid_dates_count = 0
+
+    seen_project_ids = set()
+    duplicate_project_ids = 0
+    seen_source_ids = set()
+    duplicate_source_ids = 0
+
+    now = datetime.utcnow()
+    stale_count = 0
+
+    for p in projects:
+        # Check required fields
+        if not p.project_id or not p.work_name or not p.state or not p.district:
+            incomplete_count += 1
+        
+        # Check provenance
+        if not p.source or not p.source_name or not p.data_version:
+            missing_provenance_count += 1
+
+        # Check coordinates validity
+        if p.latitude is None or p.longitude is None:
+            missing_coords_count += 1
+        else:
+            if not (-90.0 <= p.latitude <= 90.0 and -180.0 <= p.longitude <= 180.0):
+                invalid_coords_count += 1
+
+        # Check numeric validity
+        if p.sanctioned_amount < 0 or p.expenditure < 0:
+            invalid_numbers_count += 1
+
+        # Check dates
+        if p.sanction_date:
+            try:
+                datetime.strptime(p.sanction_date[:10], "%Y-%m-%d")
+            except Exception:
+                invalid_dates_count += 1
+
+        # Check duplicates
+        if p.project_id in seen_project_ids:
+            duplicate_project_ids += 1
+        else:
+            seen_project_ids.add(p.project_id)
+
+        if p.source_record_id:
+            if p.source_record_id in seen_source_ids:
+                duplicate_source_ids += 1
+            else:
+                seen_source_ids.add(p.source_record_id)
+
+        # Check freshness (> 365 days)
+        if p.last_updated_at and (now - p.last_updated_at).days > 365:
+            stale_count += 1
+
+    # Check MP duplicates
+    mps = db.query(MP).all()
+    seen_mp_sources = set()
+    duplicate_mps = 0
+    for m in mps:
+        if m.source_record_id:
+            if m.source_record_id in seen_mp_sources:
+                duplicate_mps += 1
+            else:
+                seen_mp_sources.add(m.source_record_id)
+
+    total_duplicates = duplicate_project_ids + duplicate_source_ids + duplicate_mps
+
+    # Rates
+    proj_denom = max(total_projects, 1)
+    rec_denom = max(total_records, 1)
+
+    completeness_rate = max(0.0, 100.0 - (incomplete_count / proj_denom * 100.0))
+    validity_rate = max(0.0, 100.0 - ((invalid_numbers_count + invalid_coords_count + invalid_dates_count) / proj_denom * 100.0))
+    uniqueness_rate = max(0.0, 100.0 - (total_duplicates / rec_denom * 100.0))
+    freshness_rate = max(0.0, 100.0 - (stale_count / proj_denom * 100.0))
+    provenance_rate = max(0.0, 100.0 - (missing_provenance_count / proj_denom * 100.0))
+
+    # Transparent Penalties:
+    # 100 - missing_field_penalty - invalid_value_penalty - duplicate_penalty - stale_penalty
+    missing_penalty = round((incomplete_count / proj_denom) * 20.0, 2)
+    invalid_penalty = round(((invalid_numbers_count + invalid_coords_count) / proj_denom) * 25.0, 2)
+    duplicate_penalty = round((total_duplicates / rec_denom) * 25.0, 2)
+    stale_penalty = round((stale_count / proj_denom) * 10.0, 2)
+    provenance_penalty = round((missing_provenance_count / proj_denom) * 20.0, 2)
+
+    total_penalties = missing_penalty + invalid_penalty + duplicate_penalty + stale_penalty + provenance_penalty
+    final_score = max(0.0, min(100.0, round(100.0 - total_penalties, 1)))
+
+    return {
+        "score": final_score,
+        "completeness": round(completeness_rate, 1),
+        "validity": round(validity_rate, 1),
+        "uniqueness": round(uniqueness_rate, 1),
+        "freshness": round(freshness_rate, 1),
+        "provenance": round(provenance_rate, 1),
+        "total_records": total_records,
+        "valid_records": total_records - incomplete_count - invalid_numbers_count - invalid_coords_count,
+        "duplicate_records": total_duplicates,
+        "incomplete_records": incomplete_count,
+        "invalid_records": invalid_numbers_count + invalid_coords_count,
+        "missing_coordinates": missing_coords_count,
+        "penalties": {
+            "missing_fields": missing_penalty,
+            "invalid_values": invalid_penalty,
+            "duplicates": duplicate_penalty,
+            "stale_data": stale_penalty,
+            "missing_provenance": provenance_penalty
+        }
+    }
+
+
 def get_data_health_and_freshness(db: Session) -> Dict[str, Any]:
     """
-    Computes real-time Data Health & Data Freshness metrics (Phase 1).
+    Computes real-time Data Health & Data Freshness metrics using real database verification.
     """
     batch = db.query(IngestionBatch).order_by(IngestionBatch.imported_at.desc()).first()
     mp_count = db.query(MP).count()
     project_count = db.query(Project).count()
+    total_records = mp_count + project_count
 
-    last_sync = batch.imported_at.strftime("%d %b %Y, %H:%M UTC") if batch else datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
-    batch_id = batch.batch_id if batch else "BATCH-MOSPI-DEFAULT"
+    if total_records == 0:
+        return {
+            "source_name": "MoSPI e-SAKSHI & Parliamentary Allocation Registries",
+            "source_url": "https://mplads.gov.in",
+            "last_synchronization": "Not Available",
+            "data_coverage_period": "Not Available",
+            "total_records": 0,
+            "validated_records": 0,
+            "rejected_records": 0,
+            "duplicate_records": 0,
+            "incomplete_records": 0,
+            "manual_review_records": 0,
+            "quality_score": 0.0,
+            "quality_breakdown": {
+                "completeness": 0.0,
+                "validity": 0.0,
+                "uniqueness": 0.0,
+                "freshness": 0.0,
+                "provenance": 0.0
+            },
+            "batch_id": "NO-ACTIVE-BATCH",
+            "status": "No Data Ingested",
+            "provenance_details": {}
+        }
+
+    quality_data = compute_real_data_quality(db)
+    last_sync = batch.imported_at.strftime("%d %b %Y, %H:%M UTC") if batch and batch.imported_at else datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+    batch_id = batch.batch_id if batch else "BATCH-INITIAL-DATA"
 
     return {
-        "source_name": "MoSPI e-SAKSHI & Official Parliamentary Allocation Registries",
-        "source_url": "https://mplads.gov.in",
+        "source_name": batch.source_name if batch else "MoSPI e-SAKSHI & Official Parliamentary Allocation Registries",
+        "source_url": batch.source_url if batch else "https://mplads.gov.in",
         "last_synchronization": last_sync,
-        "data_coverage_period": "2024 – 2026 (18th Lok Sabha / Rajya Sabha Session)",
-        "total_records": mp_count + project_count,
-        "validated_records": mp_count + project_count,
-        "rejected_records": 0,
-        "duplicate_records": 12,
-        "incomplete_records": 0,
+        "data_coverage_period": batch.data_coverage_period if batch else "FY 2024–2026 (18th Lok Sabha / Active Rajya Sabha)",
+        "total_records": total_records,
+        "validated_records": quality_data["valid_records"],
+        "rejected_records": quality_data["invalid_records"],
+        "duplicate_records": quality_data["duplicate_records"],
+        "incomplete_records": quality_data["incomplete_records"],
         "manual_review_records": 0,
-        "quality_score": 98.5,
+        "quality_score": quality_data["score"],
+        "quality_breakdown": {
+            "completeness": quality_data["completeness"],
+            "validity": quality_data["validity"],
+            "uniqueness": quality_data["uniqueness"],
+            "freshness": quality_data["freshness"],
+            "provenance": quality_data["provenance"]
+        },
         "batch_id": batch_id,
-        "status": "Healthy & Synchronized",
+        "status": "Healthy & Verified" if quality_data["score"] >= 80 else "Requires Data Remediation",
         "provenance_details": {
-            "dataset_a": "Allocated Limit for Honble MPs (1)(1).csv (231 RS & Nominated)",
-            "dataset_b": "Allocated Limit for Honble MPs.csv (543 LS)",
+            "dataset_a": "Allocated Limit for Honble MPs (1)(1).csv (Rajya Sabha & Nominated Allocation)",
+            "dataset_b": "Allocated Limit for Honble MPs.csv (Lok Sabha Allocation)",
             "normalization_method": "Token-sort Levenshtein MP Matching + Honorific Strip",
             "coercion_guard": "Strict floating-point Indian Rupee string parser with paisa precision",
             "audit_compliance": "Section 32 / DIID MoSPI Government Standard"
@@ -278,29 +465,36 @@ def get_data_health_and_freshness(db: Session) -> Dict[str, Any]:
 
 def get_project_provenance(db: Session, project_id: str) -> Dict[str, Any]:
     """
-    Returns complete data provenance and traceability trail for an individual project (Phase 1 & Phase 7).
+    Returns complete data provenance and traceability trail for an individual project.
+    Honest labeling: Never fabricates official provenance for demo data.
     """
     project = db.query(Project).filter_by(project_id=project_id).first()
     if not project:
         return {}
 
+    is_demo = bool(project.is_demo)
+    source_url = project.source_url if (not is_demo and project.source_url) else None
+
     return {
         "project_id": project.project_id,
         "work_name": project.work_name,
-        "source": project.source,
-        "source_name": project.source_name or ("MoSPI Official Portal" if not project.is_demo else "Demonstration Simulation Store"),
-        "source_url": project.source_url or "https://mplads.gov.in",
-        "source_record_id": project.source_record_id or f"SRC-{project.project_id}",
-        "data_mode": "Demonstration / Simulation" if project.is_demo else "Official / Imported Data",
-        "imported_at": project.imported_at.strftime("%d %b %Y, %H:%M UTC") if project.imported_at else "01 Aug 2024",
-        "retrieved_at": project.retrieved_at.strftime("%d %b %Y, %H:%M UTC") if project.retrieved_at else "01 Aug 2024",
-        "last_updated_at": project.last_updated_at.strftime("%d %b %Y, %H:%M UTC") if project.last_updated_at else "09 Sep 2026",
+        "source": project.source or ("Demonstration Dataset" if is_demo else "Imported CSV Dataset"),
+        "source_name": project.source_name or ("Demonstration Simulation Store" if is_demo else "MoSPI Official Portal"),
+        "source_url": source_url,
+        "source_record_id": project.source_record_id or ("DEMO-" + project.project_id if is_demo else None),
+        "data_mode": "Demo / Simulated" if is_demo else "Official / Imported Data",
+        "data_origin": "Demo / Simulated" if is_demo else "Official / Imported",
+        "imported_at": project.imported_at.strftime("%d %b %Y, %H:%M UTC") if project.imported_at else None,
+        "retrieved_at": project.retrieved_at.strftime("%d %b %Y, %H:%M UTC") if project.retrieved_at else None,
+        "last_updated_at": project.last_updated_at.strftime("%d %b %Y, %H:%M UTC") if project.last_updated_at else None,
         "data_version": project.data_version or "v2026.1",
-        "ingestion_batch_id": project.ingestion_batch_id or "BATCH-DEMO-SIM-01",
+        "ingestion_batch_id": project.ingestion_batch_id or ("BATCH-DEMO-SIM-01" if is_demo else None),
         "implementing_agency": project.implementing_agency,
-        "is_demo": project.is_demo,
+        "is_demo": is_demo,
+        "location_status": "Simulated Location — Demonstration Data" if is_demo else ("Actual Stored Coordinates" if project.latitude and project.longitude else "Location not available"),
         "audit_trace": {
             "immutable_record_hash": f"SHA256:{abs(hash(project.project_id + str(project.sanctioned_amount))):016x}",
             "disclaimer": "AI-generated risk indicators support monitoring and verification. They do not by themselves establish fraud, misconduct, or wrongdoing."
         }
     }
+

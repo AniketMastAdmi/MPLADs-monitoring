@@ -290,3 +290,20 @@ class AuditLog(Base):
     details = Column(Text, nullable=True)
     comment = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    salt = Column(String(64), nullable=False)
+    full_name = Column(String(150), nullable=False)
+    role = Column(String(50), nullable=False, index=True)
+    designation = Column(String(150), nullable=True)
+    state = Column(String(100), nullable=True)
+    district = Column(String(100), nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
