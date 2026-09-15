@@ -17,7 +17,11 @@ if os.path.exists(_env_path):
     except Exception:
         pass
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./mplads_insight.db")
+# Resolve DATABASE_URL: treat missing, empty, or whitespace-only values as absent.
+# On Vercel the filesystem is read-only except for /tmp, so we use /tmp as the
+# SQLite fallback. Local development and external databases are unaffected.
+_VERCEL_SQLITE_FALLBACK = "sqlite:////tmp/mplads_insight.db"
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip() or _VERCEL_SQLITE_FALLBACK
 
 # For SQLite, enable check_same_thread=False
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
