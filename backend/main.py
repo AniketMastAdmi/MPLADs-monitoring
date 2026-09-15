@@ -65,8 +65,12 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 # Static mounting for uploaded field verification evidence (Phase 6)
+# On Vercel the filesystem is read-only except /tmp; detect via the VERCEL env var.
 from fastapi.staticfiles import StaticFiles
-uploads_dir = os.path.join(os.getcwd(), "backend", "uploads")
+if os.environ.get("VERCEL"):
+    uploads_dir = "/tmp/uploads"
+else:
+    uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
